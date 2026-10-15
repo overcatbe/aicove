@@ -43,8 +43,9 @@ def add_assistant():
     that is there already is left as it is."""
     from . import personas
     here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    for pid, name, prompt in (("assistant", "Assistant", None),
-                              ("balthazar-the-unsupervised", "Balthazar the Unsupervised", "balthazar.txt")):
+    for pid, name, prompt, picture in (
+            ("assistant", "Assistant", None, None),
+            ("balthazar-the-unsupervised", "Balthazar the Unsupervised", "balthazar.txt", "balthazar.jpg")):
         mark = os.path.join(PERSONA_DIR, f".{pid.split('-')[0]}-made")
         if os.path.exists(mark):
             continue
@@ -54,4 +55,7 @@ def add_assistant():
                 with open(os.path.join(here, prompt), encoding="utf-8") as f:
                     system = f.read().strip()
             personas.Persona(pid, name, system).write()
+            if picture:
+                with open(os.path.join(here, picture), "rb") as f:
+                    personas.set_picture(pid, f.read(), ".jpg")
         open(mark, "w").close()
