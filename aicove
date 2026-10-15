@@ -1,0 +1,14 @@
+#!/usr/bin/python3
+# AIcove — run from wherever this copy of the program is (install.sh links it onto the PATH).
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from cove.cli import main  # noqa: E402
+
+try:
+    sys.exit(main())
+except BrokenPipeError:
+    # Output went into something like "| head" that stopped reading.
+    os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    sys.exit(1)
