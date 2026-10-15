@@ -23,6 +23,8 @@ chats of the one you picked; on the right the chat.
 
 - **Assistant** is a plain persona with no prompt, knowledge or facts, on whatever model is
   loaded: for trying a model as it is. Delete it if you don't need it; it doesn't come back.
+- **Balthazar the Unsupervised** is an example of what a persona can be: an ancient, grumpy
+  wizard who holds grudges. Change him on the Personas tab, or delete him; he doesn't come back either.
 - **Enter** sends, **Shift+Enter** makes a new line. **Ctrl+N** or **New chat** starts a new one.
 - At the top: the model the persona runs on. A persona names its models (`models:` in its file,
   set on the Personas tab); the list shows the ones this machine has. If another model is loaded,

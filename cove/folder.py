@@ -37,12 +37,21 @@ def move_in(say=None):
 
 
 def add_assistant():
-    """The plain Assistant, made once: no prompt, no knowledge, any model; for trying models.
-    Deleted, it stays away (the mark stays behind)."""
-    mark = os.path.join(PERSONA_DIR, ".assistant-made")
-    if os.path.exists(mark):
-        return
+    """The personas AIcove comes with, each made once: the plain Assistant (no prompt, no
+    knowledge, any model; for trying models) and Balthazar the Unsupervised, to show what a
+    persona can be. Deleted, they stay away (the mark stays behind); one of the same name
+    that is there already is left as it is."""
     from . import personas
-    if not os.path.exists(personas.folder("assistant")):
-        personas.Persona("assistant", "Assistant", "").write()
-    open(mark, "w").close()
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    for pid, name, prompt in (("assistant", "Assistant", None),
+                              ("balthazar-the-unsupervised", "Balthazar the Unsupervised", "balthazar.txt")):
+        mark = os.path.join(PERSONA_DIR, f".{pid.split('-')[0]}-made")
+        if os.path.exists(mark):
+            continue
+        if not os.path.exists(personas.folder(pid)):
+            system = ""
+            if prompt:
+                with open(os.path.join(here, prompt), encoding="utf-8") as f:
+                    system = f.read().strip()
+            personas.Persona(pid, name, system).write()
+        open(mark, "w").close()
