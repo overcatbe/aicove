@@ -1,0 +1,1050 @@
+# The Chat tab: pick a persona, talk to it. Its chats are files in its folder (chat.py);
+# the model it runs on is started here when another one is loaded.
+
+import html
+import os
+import re
+import threading
+import time
+
+import markdown
+from PyQt6.QtCore import QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtWidgets import (
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+)
+
+from . import chat, facts, knowledge, launchers, personas, pictures, summary, voice
+
+try:
+    from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
+    CODE = True
+except ImportError:
+    CODE = False
+
+ROLE = Qt.ItemDataRole.UserRole
+
+
+PICTURE_WIDTH = 420   # pictures in the chat, in pixels; a click shows them whole
+
+
+def to_html(text, dark):
+    """Markdown of a message as HTML for Qt's text view. HTML the model writes is shown as
+    text, not run."""
+    extensions = ["fenced_code", "tables", "sane_lists", "nl2br"]
+    configs = {}
+    if CODE:
+        extensions.append("codehilite")
+        configs["codehilite"] = {"noclasses": True, "pygments_style": "monokai" if dark else "default",
+                                 "guess_lang": False}
+    md = markdown.Markdown(extensions=extensions, extension_configs=configs)
+    md.preprocessors.deregister("html_block")
+    md.inlinePatterns.deregister("html")
+    # Pictures in Markdown can't be shown (nothing is fetched); models invent such links for
+    # pictures they made, which are shown under the tool call anyway.
+    parts = re.split(r"(```.*?```|`[^`\n]*`)", text, flags=re.S)
+    return md.convert("".join(p if i % 2 else re.sub(r"!\[[^\]]*\]\([^)]*\)", "", p)
+                              for i, p in enumerate(parts)))
+
+
+class Reply(QThread):
+    """Gets one answer in the background; the pieces come as signals. A write the model wants
+    is asked in the window (asking), and this thread waits for the answer."""
+    part = pyqtSignal(str, str)
+    failed = pyqtSignal(str)
+    asking = pyqtSignal(str, str)
+
+    def __init__(self, persona, conversation):
+        super().__init__()
+        self.persona, self.conversation = persona, conversation
+        self.stopping = False
+        self.answered = threading.Event()
+        self.answer = False
+
+    def ask(self, title, message):
+        self.answered.clear()
+        self.answer = False
+        self.asking.emit(title, message)
+        self.answered.wait()
+        return self.answer and not self.stopping
+
+    def stop(self):
+        self.stopping = True
+        self.answered.set()
+
+    def run(self):
+        try:
+            chat.reply(self.persona, self.conversation, self.part.emit, lambda: self.stopping, self.ask)
+        except OSError as e:
+            self.failed.emit(str(e))
+
+
+class WriteDialog(QDialog):
+    """A persona wants to write a file: what changes, and Write it / Don't."""
+
+    def __init__(self, parent, title, message):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        head, _, rest = message.partition("\n\n")
+        label = QLabel(head)
+        label.setWordWrap(True)
+        text = QPlainTextEdit(rest)
+        text.setReadOnly(True)
+        text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        buttons = QDialogButtonBox()
+        yes = buttons.addButton("Write it", QDialogButtonBox.ButtonRole.AcceptRole)
+        no = buttons.addButton("Don't", QDialogButtonBox.ButtonRole.RejectRole)
+        no.setDefault(True)
+        yes.setAutoDefault(False)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box = QVBoxLayout(self)
+        box.addWidget(label)
+        box.addWidget(text, 1)
+        box.addWidget(buttons)
+        self.resize(720, 460)
+
+
+class EditDialog(QDialog):
+    def __init__(self, parent, title, text, again):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.again = False
+        self.text = QPlainTextEdit(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        if again:
+            b = buttons.addButton("Save and answer again", QDialogButtonBox.ButtonRole.AcceptRole)
+            b.setToolTip("Everything after this message goes, and the persona answers it anew.")
+            b.clicked.connect(lambda: setattr(self, "again", True))
+        box = QVBoxLayout(self)
+        box.addWidget(self.text)
+        box.addWidget(buttons)
+        self.resize(640, 380)
+
+
+class Speaking(QThread):
+    """Makes the audio of one answer (or finds it made before)."""
+    done = pyqtSignal(str, str)
+
+    def __init__(self, pid, profile, text):
+        super().__init__()
+        self.args = (pid, profile, text)
+
+    def run(self):
+        try:
+            self.done.emit(voice.speak(*self.args, say=lambda t: None), "")
+        except Exception as e:  # noqa: BLE001 (anything left uncaught in a thread ends the program)
+            self.done.emit("", str(e) or type(e).__name__)
+
+
+class Proposing(QThread):
+    """Asks the model which facts of a chat are worth keeping."""
+    done = pyqtSignal(list, str)
+
+    def __init__(self, persona, conversation):
+        super().__init__()
+        self.persona, self.conversation = persona, conversation
+
+    def run(self):
+        try:
+            self.done.emit(facts.propose(self.persona, self.conversation), "")
+        except Exception as e:  # noqa: BLE001 (anything left uncaught in a thread ends the program)
+            self.done.emit([], str(e) or type(e).__name__)
+
+
+class FactsDialog(QDialog):
+    """A persona's facts, one tab per section file, to edit here or in the text editor."""
+
+    def __init__(self, parent, persona):
+        super().__init__(parent)
+        self.persona = persona
+        self.setWindowTitle(f"What {persona.name} remembers")
+        hint = QLabel(f"These go into every chat with {persona.name}. One fact per line. Each section is "
+                      f"a file of its own in {os.path.join(personas.folder(persona.id), facts.FOLDER)}.")
+        hint.setWordWrap(True)
+        self.tabs = QTabWidget()
+        self.texts = {}
+        known = facts.read(persona.id)
+        for section in facts.SECTIONS:
+            page = QWidget()
+            pbox = QVBoxLayout(page)
+            note = QLabel(facts.HINTS[section].capitalize() + ".")
+            note.setEnabled(False)
+            text = QPlainTextEdit("\n".join(known[section]))
+            text.setPlaceholderText("Nothing yet.")
+            outside = QPushButton("Open in the text editor")
+            outside.setToolTip("Saves what is here, then opens the file in your editor")
+            outside.clicked.connect(lambda _, s=section: self.open_outside(s))
+            row = QHBoxLayout()
+            row.addWidget(note, 1)
+            row.addWidget(outside)
+            pbox.addLayout(row)
+            pbox.addWidget(text, 1)
+            self.texts[section] = text
+            self.tabs.addTab(page, f"{section} ({len(known[section])})")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        show = buttons.addButton("Show files", QDialogButtonBox.ButtonRole.ActionRole)
+        show.setToolTip("Saves what is here, then opens the folder of the four files in the file manager")
+        show.clicked.connect(self.show_files)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box = QVBoxLayout(self)
+        box.addWidget(hint)
+        box.addWidget(self.tabs, 1)
+        box.addWidget(buttons)
+        self.resize(760, 560)
+
+    def save(self):
+        for section, text in self.texts.items():
+            facts.write(self.persona.id, section, facts.lines_of(text.toPlainText()))
+
+    def open_outside(self, section):
+        """Save, then hand the file to the desktop's editor. This window closes, so it can't
+        write over what is changed there."""
+        try:
+            self.save()
+            p = facts.path(self.persona.id, section)
+            if not os.path.exists(p):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                open(p, "w").close()
+        except OSError as e:
+            QMessageBox.critical(self, "Facts", str(e))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+        self.reject()
+
+    def show_files(self):
+        """Save, make the four files (empty ones too, so they can be found), open their folder.
+        This window closes, like for the text editor."""
+        try:
+            self.save()
+            for section in facts.SECTIONS:
+                p = facts.path(self.persona.id, section)
+                if not os.path.exists(p):
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    open(p, "w").close()
+        except OSError as e:
+            QMessageBox.critical(self, "Facts", str(e))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(p)))
+        self.reject()
+
+
+class ProposalDialog(QDialog):
+    """Facts the model found in a chat: tick, change or drop each, then keep the ticked ones."""
+
+    def __init__(self, parent, persona, found):
+        super().__init__(parent)
+        self.setWindowTitle(f"What should {persona.name} remember?")
+        hint = QLabel("Ticked ones are kept. Change the wording or the section if you like.")
+        hint.setWordWrap(True)
+        grid = QGridLayout()
+        self.rows = []
+        for r, (section, fact) in enumerate(found):
+            tick = QCheckBox()
+            tick.setChecked(True)
+            where = QComboBox()
+            where.addItems(facts.SECTIONS)
+            where.setCurrentText(section)
+            line = QLineEdit(fact)
+            line.setCursorPosition(0)
+            grid.addWidget(tick, r, 0)
+            grid.addWidget(where, r, 1)
+            grid.addWidget(line, r, 2)
+            self.rows.append((tick, where, line))
+        grid.setColumnStretch(2, 1)
+        inner = QWidget()
+        inner.setLayout(grid)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(inner)
+        buttons = QDialogButtonBox()
+        buttons.addButton("Keep the ticked ones", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box = QVBoxLayout(self)
+        box.addWidget(hint)
+        box.addWidget(scroll, 1)
+        box.addWidget(buttons)
+        self.resize(860, 120 + 40 * min(len(found), 10))
+
+    def chosen(self):
+        return [(where.currentText(), line.text().strip()) for tick, where, line in self.rows
+                if tick.isChecked() and line.text().strip()]
+
+
+class ChatTab(QWidget):
+    def __init__(self, window):
+        super().__init__()
+        self.window = window
+        self.persona = None
+        self.chat = None
+        self.worker = None
+        self.waiting = None          # a message that waits for the model to load
+        self.open_thinking = set()   # messages whose thinking (or tool result) is shown
+        self.live = None             # {"thinking", "text"} of the answer coming in
+        self.live_thinking = False   # the thinking of the answer coming in is shown (stays so for the next)
+        self.dirty = False
+
+        self.people = QListWidget()
+        self.people.currentItemChanged.connect(self.on_persona)
+        self.chats = QListWidget()
+        self.chats.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.chats.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.chats.currentItemChanged.connect(self.on_chat)
+        new_btn = QPushButton("New chat")
+        new_btn.clicked.connect(self.new_chat)
+        rename_btn = QPushButton("Rename…")
+        rename_btn.clicked.connect(self.rename_chat)
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(self.delete_chat)
+        row = QHBoxLayout()
+        row.addWidget(rename_btn)
+        row.addWidget(delete_btn)
+        left = QWidget()
+        lbox = QVBoxLayout(left)
+        lbox.setContentsMargins(0, 0, 0, 0)
+        lbox.addWidget(QLabel("Personas"))
+        lbox.addWidget(self.people, 2)
+        lbox.addWidget(QLabel("Chats"))
+        lbox.addWidget(self.chats, 3)
+        lbox.addWidget(new_btn)
+        lbox.addLayout(row)
+
+        self.title = QLabel()
+        font = self.title.font()
+        font.setPointSizeF(font.pointSizeF() * 1.25)
+        font.setBold(True)
+        self.title.setFont(font)
+        self.model = QComboBox()
+        self.model.currentIndexChanged.connect(lambda _: (self.show_thinking_control(), self.show_state()))
+        self.model.setToolTip("The models this persona may run on, that are on this machine")
+        self.load_btn = QPushButton("Load")
+        self.load_btn.setToolTip("Load this model now (the one loaded at the moment is stopped)")
+        self.load_btn.clicked.connect(lambda: self.load_model())
+        self.state = QLabel()
+        self.state.setEnabled(False)
+        self.facts_btn = QPushButton("Facts…")
+        self.facts_btn.setToolTip("What this persona remembers from earlier chats; it goes into every chat")
+        self.facts_btn.clicked.connect(self.edit_facts)
+        self.remember_btn = QPushButton("Remember…")
+        self.remember_btn.setToolTip("Let the model pick what from this chat is worth remembering; "
+                                     "you keep, change or drop each one")
+        self.remember_btn.clicked.connect(self.remember)
+        self.proposing = None
+        self.speaking = None    # (message number, thread) while an answer's audio is being made
+        self.playing = None     # message number whose audio plays
+        self.player = None
+        self.knowledge_btn = QPushButton("Knowledge…")
+        self.knowledge_btn.clicked.connect(self.open_knowledge)
+        head = QHBoxLayout()
+        head.addWidget(self.title)
+        head.addWidget(self.facts_btn)
+        head.addWidget(self.remember_btn)
+        head.addWidget(self.knowledge_btn)
+        head.addStretch(1)
+        head.addWidget(self.state)
+        head.addWidget(self.model)
+        head.addWidget(self.load_btn)
+
+        self.view = QTextBrowser()
+        self.view.setOpenLinks(False)
+        self.view.anchorClicked.connect(self.on_link)
+        self.input = QPlainTextEdit()
+        self.input.setPlaceholderText("Write here. Enter sends, Shift+Enter makes a new line.")
+        self.input.setFixedHeight(96)
+        self.input.installEventFilter(self)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.clicked.connect(self.send)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.clicked.connect(self.stop)
+        self.stop_btn.hide()
+        buttons = QVBoxLayout()
+        buttons.addWidget(self.send_btn)
+        buttons.addWidget(self.stop_btn)
+        buttons.addStretch(1)
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.input, 1)
+        bottom.addLayout(buttons)
+
+        # The controls: per chat, over the persona's own settings.
+        self.controls = {}
+        self.new_controls = {}
+        knobs = QHBoxLayout()
+        for key, label, options, tip in (
+                ("style", "Style", [("as set", "")] + [(n, n) for n in chat.STYLES],
+                 "How free the writing is: Factual = focused, Creative and Story = looser and more varied. "
+                 "\"as set\" = the persona's (or its launcher's) own settings."),
+                ("thinking", "Thinking", [("as set", ""), ("on", "on"), ("off", "off")],
+                 "Whether a thinking model thinks before it answers. Off is quicker."),
+                ("length", "Length", [("as set", "")] + [(f"{n.lower()} (≤{v} tokens)", n) for n, v in chat.LENGTHS.items()],
+                 "The longest an answer may get."),
+                ("web", "Web", [("off", ""), ("on", "on")],
+                 "On: the persona may search the web and read pages for this chat."),
+                ("pictures", "Pictures", [("off", ""), ("on", "on")],
+                 "On: the persona may make pictures in this chat (the image server starts when needed).")):
+            combo = QComboBox()
+            for text, value in options:
+                combo.addItem(text, value)
+            combo.setToolTip(tip)
+            combo.currentIndexChanged.connect(lambda _, k=key: self.on_control(k))
+            name = QLabel(label + ":")
+            name.setToolTip(tip)
+            knobs.addWidget(name)
+            knobs.addWidget(combo)
+            knobs.addSpacing(12)
+            self.controls[key] = combo
+        knobs.addStretch(1)
+
+        right = QWidget()
+        rbox = QVBoxLayout(right)
+        rbox.setContentsMargins(0, 0, 0, 0)
+        rbox.addLayout(head)
+        rbox.addWidget(self.view, 1)
+        rbox.addLayout(knobs)
+        rbox.addLayout(bottom)
+
+        split = QSplitter()
+        split.addWidget(left)
+        split.addWidget(right)
+        split.setStretchFactor(1, 1)
+        split.setSizes([250, 900])
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.addWidget(split)
+        QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
+
+        # Repaint at most this often while an answer comes in.
+        self.paint_timer = QTimer(self)
+        self.paint_timer.setInterval(120)
+        self.paint_timer.timeout.connect(self.paint_if_dirty)
+        self.state_timer = QTimer(self)
+        self.state_timer.timeout.connect(self.show_state)
+        self.state_timer.start(2000)
+        window.proc.finished.connect(self.model_started)
+        self.reload()
+
+    # --- personas and chats ----------------------------------------------------------
+
+    def reload(self):
+        """Fill the persona list again (personas may have been changed on the Personas tab), and
+        look at the knowledge again (files may have been added)."""
+        keep = self.persona.id if self.persona else None
+        loaded = chat.loaded_launcher()
+        self.people.blockSignals(True)
+        self.people.clear()
+        pick = None
+        for p in sorted(personas.load_all().values(), key=lambda p: p.name.lower()):
+            item = QListWidgetItem(p.name)
+            item.setData(ROLE, p.id)
+            picture = personas.picture_path(p.id)
+            if picture:
+                item.setIcon(QIcon(QPixmap(picture)))
+            self.people.addItem(item)
+            if p.id == keep or (keep is None and pick is None and loaded and loaded.name in p.models):
+                pick = item
+        self.people.blockSignals(False)
+        if self.people.count():
+            self.people.setCurrentItem(pick or self.people.item(0))
+
+    def on_persona(self, item, _=None):
+        if item is None or self.worker:
+            return
+        pid = item.data(ROLE)
+        if self.persona and self.persona.id == pid:
+            self.persona = personas.Persona.read(pid)
+            self.fill_models()
+            self.show_knowledge()
+            return
+        self.persona = personas.Persona.read(pid)
+        self.title.setText(self.persona.name)
+        self.fill_models()
+        self.show_knowledge()
+        self.fill_chats()
+
+    def fill_models(self):
+        here = {l.name: l for l in launchers.find_launchers() if not l.error}
+        names = [n for n in self.persona.models if n in here] or sorted(here)
+        loaded = chat.loaded_launcher()
+        self.model.clear()
+        for name in names:
+            self.model.addItem(here[name].friendly or name, name)
+        if loaded and loaded.name in names:
+            self.model.setCurrentIndex(names.index(loaded.name))
+        self.show_thinking_control()
+        self.show_state()
+
+    def fill_chats(self, select=None):
+        self.chats.blockSignals(True)
+        self.chats.clear()
+        pick = None
+        for cid, title, mtime in chat.list_chats(self.persona.id):
+            item = QListWidgetItem(title)
+            item.setData(ROLE, cid)
+            item.setToolTip(time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime)))
+            self.chats.addItem(item)
+            if cid == select:
+                pick = item
+        self.chats.blockSignals(False)
+        if pick is not None or (select is None and self.chats.count()):
+            self.chats.setCurrentItem(pick or self.chats.item(0))
+        else:
+            self.chat = None
+            self.paint()
+
+    def on_chat(self, item, _=None):
+        if self.player is not None:
+            self.player.stop()
+        if item is None or self.worker:
+            return
+        try:
+            self.chat = chat.Chat.load(self.persona.id, item.data(ROLE))
+        except (OSError, ValueError) as e:
+            self.window.say(f"Can't read that chat: {e}")
+            self.chat = None
+        self.open_thinking.clear()
+        self.show_controls()
+        self.paint()
+        self.input.setFocus()
+
+    def new_chat(self):
+        if self.worker or self.persona is None:
+            return
+        self.chats.clearSelection()
+        self.chats.setCurrentItem(None)
+        self.chat = None
+        self.show_controls()
+        self.paint()
+        self.input.setFocus()
+
+    def rename_chat(self):
+        if self.chat is None or self.worker:
+            return
+        title, ok = QInputDialog.getText(self, "Rename chat", "Title:", text=self.chat.title)
+        if ok and title.strip():
+            self.chat.title = title.strip()
+            self.chat.save()
+            self.fill_chats(self.chat.id)
+
+    def delete_chat(self):
+        if self.chat is None or self.worker:
+            return
+        answer = QMessageBox.question(self, "Delete chat", f"Delete \"{self.chat.title}\"?\n\n"
+                                      f"It is kept in {os.path.join(personas.TRASH_DIR, 'chats')}.")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.chat.delete()
+            self.chat = None
+            self.fill_chats()
+
+    # --- controls ---------------------------------------------------------------------
+
+    def show_controls(self):
+        """The menus as this chat has them; a new chat starts with "as set"."""
+        values = self.chat.controls if self.chat else {}
+        for key, combo in self.controls.items():
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(combo.findData(values.get(key, "")), 0))
+            combo.blockSignals(False)
+        self.new_controls = {}
+
+    def on_control(self, key):
+        value = self.controls[key].currentData()
+        if self.chat is None:
+            # Kept for the chat the next message starts.
+            self.new_controls[key] = value
+            return
+        self.chat.controls[key] = value
+        try:
+            self.chat.save()
+        except OSError as e:
+            self.window.say(f"Can't save the chat: {e}")
+
+    def show_thinking_control(self):
+        """Thinking can only be switched for models whose template knows how; the web needs
+        a model that can use tools."""
+        launcher = launchers.get(self.model.currentData() or "")
+        tools = launchers.can_use_tools(launcher.model) if launcher else None
+        self.controls["web"].setEnabled(tools is not False)
+        self.controls["web"].setToolTip("On: the persona may search the web and read pages for this chat."
+                                        if tools is not False else "This model can't use tools, so no web search.")
+        self.controls["pictures"].setEnabled(tools is not False)
+        self.controls["pictures"].setToolTip(
+            "On: the persona may make pictures in this chat (the image server starts when needed)."
+            if tools is not False else "This model can't use tools, so no pictures.")
+        can = launchers.can_think(launcher.model) if launcher else None
+        combo = self.controls["thinking"]
+        combo.setEnabled(can is not False)
+        combo.setToolTip("Whether a thinking model thinks before it answers. Off is quicker." if can is not False
+                         else "This model's thinking can't be switched on or off.")
+
+    # --- the model --------------------------------------------------------------------
+
+    def show_state(self):
+        if self.persona is None:
+            return
+        loaded = chat.loaded_launcher()
+        wanted = self.model.currentData()
+        if self.window.busy():
+            text = "Loading…"
+        elif loaded is None:
+            text = "No model loaded"
+        elif loaded.name == wanted:
+            text = "Ready" if self.window.health.state == "ready" else "Loading…"
+        else:
+            text = f"Loaded: {loaded.friendly or loaded.name}"
+        self.state.setText(text)
+        self.load_btn.setEnabled(not self.window.busy() and (loaded is None or loaded.name != wanted))
+
+    def load_model(self, then=None):
+        name = self.model.currentData()
+        if not name or self.window.busy():
+            return
+        self.waiting = then
+        self.window.say(f"--- {name} for {self.persona.name} ---")
+        self.window.run_cove("start", name)
+        self.show_state()
+
+    def model_started(self, *_):
+        self.show_state()
+        message, self.waiting = self.waiting, None
+        if message is None:
+            return
+        loaded = chat.loaded_launcher()
+        if loaded is not None and loaded.name == self.model.currentData():
+            self.answer()
+        else:
+            self.window.say("The model didn't come up; the message is kept in the chat. Send again to retry.")
+
+    # --- talking ----------------------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        if obj is self.input and event.type() == event.Type.KeyPress \
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) \
+                and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.send()
+            return True
+        return super().eventFilter(obj, event)
+
+    def send(self):
+        if self.persona is None or self.worker or self.waiting:
+            return
+        text = self.input.toPlainText().strip()
+        if not text and not (self.chat and self.chat.messages and self.chat.messages[-1]["role"] == "user"):
+            return
+        if self.chat is None:
+            self.chat = chat.Chat.new(self.persona.id)
+            self.chat.controls.update(self.new_controls)
+        if text:
+            self.chat.add("user", text)
+            self.chat.save()
+            self.input.clear()
+            self.fill_chats(self.chat.id)
+        self.paint()
+        loaded = chat.loaded_launcher()
+        if loaded is None or loaded.name != self.model.currentData():
+            if self.window.busy():
+                self.window.say("A model is being started or stopped; send again when it is done.")
+                return
+            self.load_model(then=True)
+            return
+        self.answer()
+
+    def answer(self):
+        self.live = {"thinking": "", "text": ""}
+        self.worker = Reply(self.persona, self.chat)
+        self.worker.part.connect(self.on_part)
+        self.worker.asking.connect(self.on_ask)
+        self.worker.failed.connect(lambda e: self.window.say(f"No answer: {e}"))
+        self.worker.finished.connect(self.answered)
+        self.send_btn.hide()
+        self.stop_btn.show()
+        self.paint_timer.start()
+        self.worker.start()
+
+    def on_part(self, kind, text):
+        if kind == "round":
+            # The tools have run; their results are in the chat now, the next part of the answer starts.
+            self.live = {"thinking": "", "text": ""}
+        elif kind == "tool":
+            self.live = {"thinking": "", "text": "", "tool": text}
+        elif kind == "status":
+            self.live["status"] = text
+        elif kind == "note":
+            self.window.say(text)
+        else:
+            self.live[kind] += text
+        self.dirty = True
+
+    def on_ask(self, title, message):
+        worker = self.worker
+        if worker is None:
+            return
+        self.paint()
+        worker.answer = WriteDialog(self, title, message).exec() == QDialog.DialogCode.Accepted
+        worker.answered.set()
+
+    def stop(self):
+        if self.worker:
+            self.worker.stop()
+
+    def answered(self):
+        self.worker = None
+        self.live = None
+        self.paint_timer.stop()
+        self.stop_btn.hide()
+        self.send_btn.show()
+        self.fill_chats(self.chat.id)
+        self.paint()
+        self.input.setFocus()
+
+    def on_link(self, url):
+        what, _, number = url.toString().partition(":")[2].partition("/")
+        if url.scheme() != "cove":
+            QDesktopServices.openUrl(url)
+            return
+        if what == "think" and number == "live":
+            self.live_thinking = not self.live_thinking
+            self.paint()
+            return
+        if self.chat is None or self.worker:
+            return
+        if what == "summary":
+            self.on_summary(number)
+            return
+        if not number.isdigit():
+            return
+        i = int(number)
+        if i >= len(self.chat.messages):
+            return
+        message = self.chat.messages[i]
+        if what == "listen":
+            self.listen(i)
+            return
+        if what == "think":
+            self.open_thinking ^= {i}
+        elif what == "edit":
+            dialog = EditDialog(self, "Edit message", message["content"], message["role"] == "user")
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            message["content"] = dialog.text.toPlainText().strip()
+            if dialog.again:
+                del self.chat.messages[i + 1:]
+            self.chat.save()
+            self.paint()
+            if dialog.again:
+                self.send()
+            return
+        elif what == "again":
+            # A new answer to the same question: the whole answer (with its tool steps) goes.
+            start = self.turn_start(i)
+            del self.chat.messages[start:]
+            self.chat.save()
+            self.paint()
+            self.send()
+            return
+        elif what == "delete":
+            answer = QMessageBox.question(self, "Delete message", "Delete this message?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            # Tool results go with the call they answer.
+            ids = {c["id"] for c in message.get("tool_calls", [])}
+            self.chat.messages[:] = [m for n, m in enumerate(self.chat.messages)
+                                     if n != i and not (m["role"] == "tool" and m.get("tool_call_id") in ids)]
+            self.open_thinking.clear()
+            self.chat.save()
+        self.paint()
+
+    def on_summary(self, action):
+        """The "So far" box: edit it, or drop it (the next message makes a new one if needed)."""
+        covered, text = summary.current(self.chat)
+        if not covered:
+            return
+        if action == "edit":
+            dialog = EditDialog(self, "Edit the summary", text, False)
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.text.toPlainText().strip():
+                summary.set_text(self.chat, dialog.text.toPlainText())
+                self.chat.save()
+        elif action == "drop":
+            answer = QMessageBox.question(
+                self, "Drop the summary",
+                "Drop the summary? The persona sees the whole chat again; if it is too long for the "
+                "model, the next message makes a new summary.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.chat.summary = {}
+            self.chat.save()
+        self.paint()
+
+    # --- knowledge ----------------------------------------------------------------------
+
+    def show_knowledge(self):
+        """The button says how much knowledge there is; its tooltip how it is used."""
+        found = knowledge.texts(self.persona.id) if self.persona else []
+        self.knowledge_btn.setText(f"Knowledge ({len(found)})…" if found else "Knowledge…")
+        size = sum(len(t) for _, t in found) * knowledge.PER_CHAR
+        if not found:
+            how = "None yet. Put text, Markdown, PDF, EPUB or Word files into the folder this opens."
+        else:
+            how = (f"{len(found)} file(s), about {int(size):,} tokens. Up to a quarter of the model's context "
+                   "goes into every chat as it is; more than that, and the persona looks things up in it.")
+        self.knowledge_btn.setToolTip("Material this persona works from, used whether or not it has file "
+                                      f"access. {how}")
+
+    def open_knowledge(self):
+        if self.persona is None:
+            return
+        where = knowledge.folder(self.persona.id)
+        try:
+            os.makedirs(where, exist_ok=True)
+        except OSError as e:
+            self.window.say(f"Can't make {where}: {e}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(where))
+
+    # --- facts --------------------------------------------------------------------------
+
+    def edit_facts(self):
+        if self.persona is None:
+            return
+        dialog = FactsDialog(self, self.persona)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            dialog.save()
+        except OSError as e:
+            QMessageBox.critical(self, "Facts", str(e))
+            return
+        count = sum(map(len, facts.read(self.persona.id).values()))
+        self.window.say(f"Saved: {self.persona.name} remembers {count} facts.")
+
+    def remember(self):
+        if self.persona is None or self.chat is None or not self.chat.messages or self.worker or self.proposing:
+            return
+        if chat.loaded_launcher() is None:
+            self.window.say("Load a model first; it is the one that reads the chat.")
+            return
+        self.remember_btn.setEnabled(False)
+        self.remember_btn.setText("Reading the chat…")
+        self.proposing = Proposing(self.persona, self.chat)
+        self.proposing.done.connect(self.proposed)
+        # Let go of the thread only once it has ended: Qt ends the program when a running thread
+        # is thrown away, and done comes while run() is still on its way out.
+        self.proposing.finished.connect(self.proposing_ended)
+        self.proposing.start()
+
+    def proposing_ended(self):
+        self.proposing = None
+        self.remember_btn.setEnabled(True)
+        self.remember_btn.setText("Remember…")
+
+    def proposed(self, found, error):
+        persona = self.proposing.persona
+        self.remember_btn.setText("Remember…")
+        if error:
+            self.window.say(f"No facts: {error}")
+            return
+        if not found:
+            QMessageBox.information(self, "Remember", f"Nothing new worth remembering for {persona.name} in this chat.")
+            return
+        dialog = ProposalDialog(self, persona, found)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.chosen():
+            return
+        try:
+            facts.add(persona.id, dialog.chosen())
+        except OSError as e:
+            QMessageBox.critical(self, "Facts", str(e))
+            return
+        self.window.say(f"{persona.name} remembers {len(dialog.chosen())} more facts.")
+
+    # --- reading answers aloud ------------------------------------------------------------
+
+    def listen(self, i):
+        if self.playing == i:
+            self.player.stop()
+            return
+        if self.speaking:
+            self.window.say("One moment: the voice is still busy with another answer.")
+            return
+        text = self.chat.messages[i]["content"]
+        made = voice.said(self.persona.id, self.persona.voice, text)
+        if made:
+            self.play(i, made)
+            return
+        t = voice.tool()
+        if t is not None and t.state() != "running":
+            self.window.say(f"Starting {t.title}; the first answer takes longer while it loads its model.")
+        thread = Speaking(self.persona.id, self.persona.voice, text)
+        self.speaking = (i, thread)
+        thread.done.connect(lambda path, error, i=i, chat_id=self.chat.id: self.spoken(i, chat_id, path, error))
+        thread.finished.connect(self.speaking_ended)
+        thread.start()
+        self.paint()
+
+    def spoken(self, i, chat_id, path, error):
+        if error:
+            self.window.say(f"Can't read it aloud: {error}")
+        elif self.chat is not None and self.chat.id == chat_id:
+            self.play(i, path)
+
+    def speaking_ended(self):
+        self.speaking = None
+        self.paint()
+
+    def play(self, i, path):
+        if self.player is None:
+            from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+            self.player = QMediaPlayer(self)
+            self.player.setAudioOutput(QAudioOutput(self.player))
+            self.player.playbackStateChanged.connect(self.play_state)
+        self.player.stop()
+        self.playing = i
+        self.player.setSource(QUrl.fromLocalFile(path))
+        self.player.play()
+        self.paint()
+
+    def play_state(self, state):
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if state == QMediaPlayer.PlaybackState.StoppedState and self.playing is not None:
+            self.playing = None
+            self.paint()
+
+    def turn_start(self, i):
+        """Where the answer that message i belongs to starts: after the last message of yours."""
+        start = i
+        while start > 0 and self.chat.messages[start - 1]["role"] != "user":
+            start -= 1
+        return start
+
+    # --- showing the chat -------------------------------------------------------------
+
+    def paint_if_dirty(self):
+        if self.dirty:
+            self.paint()
+
+    def paint(self):
+        self.dirty = False
+        bar = self.view.verticalScrollBar()
+        at_end = bar.value() >= bar.maximum() - 40
+        keep = bar.value()
+        self.view.setHtml(self.page())
+        bar.setValue(bar.maximum() if at_end or self.worker else keep)
+
+    def page(self):
+        pal = self.palette()
+        dark = pal.window().color().lightness() < 128
+        dim = pal.placeholderText().color().name()
+        mine = pal.alternateBase().color().name()
+        if self.persona is None:
+            return f"<p style='color:{dim}'>No personas yet — make one on the Personas tab.</p>"
+        messages = self.chat.messages if self.chat else []
+        if not messages and not self.live:
+            return f"<p style='color:{dim}'>A new chat with {html.escape(self.persona.name)}.</p>"
+        picture = personas.picture_path(self.persona.id)
+        face = f"<img src='{QUrl.fromLocalFile(picture).toString()}' width='22' height='22'> " if picture else ""
+        last = len(messages) - 1
+        parts = []
+        name = f"{face}<b>{html.escape(self.persona.name)}</b>"
+        covered, so_far = summary.current(self.chat) if self.chat else (0, "")
+        if covered:
+            edited = " (edited by you)" if self.chat.summary.get("edited") else ""
+            parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
+                         f"<b>So far</b> <span style='color:{dim}; font-size:small'>— what "
+                         f"{html.escape(self.persona.name)} knows of the first {covered} messages{edited}"
+                         f"</span><br>{to_html(so_far, dark)}"
+                         f"<span style='color:{dim}; font-size:small'><a href='cove:summary/edit'>edit</a> · "
+                         f"<a href='cove:summary/drop'>drop</a></span></td></tr></table>")
+        for i, m in enumerate(messages):
+            if covered and i == covered:
+                parts.append(f"<p align='center' style='color:{dim}; font-size:small'>— above this line "
+                             f"{html.escape(self.persona.name)} sees only the summary —</p>")
+            # The persona's name only at the start of an answer, not again after each tool step.
+            first = i == 0 or messages[i - 1]["role"] == "user"
+            if m["role"] == "tool":
+                shown = i in self.open_thinking
+                line = (f"<a href='cove:think/{i}' style='color:{dim}'>{'▾' if shown else '▸'} "
+                        f"{html.escape(m.get('summary') or m.get('name', 'tool'))}</a>")
+                if shown:
+                    line += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
+                             f"<tr><td><pre style='white-space:pre-wrap'>{html.escape(m['content'][:6000])}"
+                             f"{'…' if len(m['content']) > 6000 else ''}</pre></td></tr></table>")
+                parts.append(f"<table width='100%' cellpadding='2'><tr><td>&nbsp;&nbsp;{line}</td></tr></table>")
+                picture = os.path.join(pictures.folder(self.persona.id), m.get("picture") or "")
+                if m.get("picture") and os.path.exists(picture):
+                    # Shown whole and small; a click opens it in the image viewer.
+                    url = QUrl.fromLocalFile(picture).toString()
+                    parts.append(f"<p>&nbsp;&nbsp;<a href='{url}'><img src='{url}' width='{PICTURE_WIDTH}'></a></p>")
+                continue
+            if m["role"] == "user":
+                head = "<b>You</b>"
+                links = [f"<a href='cove:edit/{i}'>edit</a>", f"<a href='cove:delete/{i}'>delete</a>"]
+                parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
+                             f"{head}<br>{to_html(m['content'], dark)}"
+                             f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>"
+                             "</td></tr></table>")
+                continue
+            if m["role"] != "assistant":
+                continue
+            model = f" <span style='color:{dim}; font-size:small'>on {html.escape(m['model'])}</span>" \
+                if m.get("model") else ""
+            body = ""
+            if m.get("thinking"):
+                words = len(m["thinking"].split())
+                shown = i in self.open_thinking
+                body += (f"<p><a href='cove:think/{i}' style='color:{dim}'>"
+                         f"{'▾' if shown else '▸'} Thinking ({words} words)</a></p>")
+                if shown:
+                    body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
+                             f"<tr><td>{to_html(m['thinking'], dark)}</td></tr></table><br>")
+            body += to_html(m["content"], dark) if m["content"] else ""
+            if m.get("ended") == "length":
+                body += f"<p style='color:{dim}'><i>(cut off: the answer reached its length limit)</i></p>"
+            elif m.get("ended") in ("stopped", "broken off"):
+                body += f"<p style='color:{dim}'><i>({m['ended']})</i></p>"
+            elif m.get("ended") == "only thought":
+                body += (f"<p style='color:{dim}'><i>(it only thought and gave no answer: answer again, "
+                         f"maybe with Thinking off)</i></p>")
+            # The steps of an answer that only call tools get no links; the answer as a whole is
+            # redone with "answer again" or removed with its last part.
+            links = []
+            if not m.get("tool_calls"):
+                links = [f"<a href='cove:edit/{i}'>edit</a>"] if m["content"] else []
+                if m["content"] and self.persona.voice:
+                    if self.speaking and self.speaking[0] == i:
+                        links.insert(0, "<i>making the voice…</i>")
+                    elif self.playing == i:
+                        links.insert(0, f"<a href='cove:listen/{i}'>■ stop</a>")
+                    else:
+                        links.insert(0, f"<a href='cove:listen/{i}'>🔊 listen</a>")
+                if i == last:
+                    links.append(f"<a href='cove:again/{i}'>answer again</a>")
+                links.append(f"<a href='cove:delete/{i}'>delete</a>")
+            head = f"{name}{model}<br>" if first else ""
+            links = f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>" if links else ""
+            parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}{links}</td></tr></table>")
+        if self.live is not None:
+            body = ""
+            if self.live.get("status"):
+                body += f"<p style='color:{dim}'><i>{html.escape(self.live['status'])}</i></p>"
+            if self.live.get("tool"):
+                body += f"<p style='color:{dim}'><i>{html.escape(self.live['tool'])} …</i></p>"
+            if self.live["thinking"]:
+                words = len(self.live["thinking"].split())
+                busy = "Thinking… " if not self.live["text"] else "Thinking "
+                body += (f"<p><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
+                         f"{busy}({words} words)</a></p>")
+                if self.live_thinking:
+                    body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
+                             f"<tr><td style='white-space:pre-wrap'>{html.escape(self.live['thinking'].strip())}"
+                             f"</td></tr></table><br>")
+            body += to_html(self.live["text"], dark) if self.live["text"] else ""
+            if not body:
+                body = f"<p style='color:{dim}'><i>…</i></p>"
+            first = not messages or messages[-1]["role"] == "user"
+            parts.append(f"<table width='100%' cellpadding='8'><tr><td>"
+                         f"{name + '<br>' if first else ''}{body}</td></tr></table>")
+        return "".join(parts)
