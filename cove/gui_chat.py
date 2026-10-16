@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import chat, facts, knowledge, launchers, personas, pictures, settings, summary, voice
+from . import chat, facts, knowledge, launchers, personas, pictures, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -401,6 +401,7 @@ class ChatTab(QWidget):
         self.live = None             # {"thinking", "text"} of the answer coming in
         self.live_thinking = False   # the thinking of the answer coming in is shown (stays so for the next)
         self.dirty = False
+        self.problem = None          # why the last answer didn't come, shown under the chat
 
         self.people = QListWidget()
         self.people.setIconSize(QSize(FACE_SIZE, FACE_SIZE))
@@ -661,6 +662,7 @@ class ChatTab(QWidget):
             self.window.say(f"Can't read that chat: {e}")
             self.chat = None
         self.open_thinking.clear()
+        self.problem = None
         self.show_controls()
         self.paint()
         self.input.setFocus()
@@ -671,6 +673,7 @@ class ChatTab(QWidget):
         self.chats.clearSelection()
         self.chats.setCurrentItem(None)
         self.chat = None
+        self.problem = None
         self.show_controls()
         self.paint()
         self.input.setFocus()
@@ -944,6 +947,7 @@ class ChatTab(QWidget):
     def send(self):
         if self.persona is None or self.worker or self.waiting:
             return
+        self.problem = None
         text = self.input.toPlainText().strip()
         if not text and not self.attached \
                 and not (self.chat and self.chat.messages and self.chat.messages[-1]["role"] == "user"):
@@ -982,7 +986,7 @@ class ChatTab(QWidget):
         self.worker = Reply(self.persona, self.chat)
         self.worker.part.connect(self.on_part)
         self.worker.asking.connect(self.on_ask)
-        self.worker.failed.connect(lambda e: self.window.say(f"No answer: {e}"))
+        self.worker.failed.connect(self.on_failed)
         self.worker.finished.connect(self.answered)
         self.send_btn.hide()
         self.stop_btn.show()
@@ -1002,6 +1006,30 @@ class ChatTab(QWidget):
         else:
             self.live[kind] += text
         self.dirty = True
+
+    def on_failed(self, error):
+        self.problem = self.why_no_answer(error)
+        self.window.say(f"No answer: {self.problem}")
+
+    def why_no_answer(self, error):
+        """What went wrong, in words: when llama-server died on the way, what its log says."""
+        if server.running() is not None:
+            return error
+        try:
+            with open(server.LLAMA_LOG, errors="replace") as f:
+                tail = f.readlines()[-200:]
+        except OSError:
+            tail = []
+        if any("n_ubatch" in line for line in tail):
+            name = self.model.currentData() or "this model"
+            return (f"llama-server crashed reading the picture: the picture has more tokens than the "
+                    f"model takes in one batch. On the Launchers tab, give {name} a bigger batch "
+                    f"(add -b 4096 -ub 4096 to its options), Save, and send again.")
+        last = next((l.strip() for l in reversed(tail)
+                     if any(w in l for w in ("GGML_ASSERT", "error", "failed", "out of memory"))), "")
+        return ("llama-server stopped while answering (it crashed). "
+                + (f"Its last error: {last}. " if last else "")
+                + f"The whole log: {server.LLAMA_LOG}")
 
     def on_ask(self, title, message):
         worker = self.worker
@@ -1403,4 +1431,7 @@ class ChatTab(QWidget):
             first = not messages or messages[-1]["role"] == "user"
             head = f"<p style='margin:0'>{name}</p>" if first else ""
             parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}</td></tr></table>")
+        if self.problem and self.live is None:
+            parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
+                         f"<b>No answer.</b> {html.escape(self.problem)}</td></tr></table>")
         return "".join(parts)

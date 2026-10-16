@@ -24,6 +24,12 @@ EYES_FLAGS = ("--mmproj", "-mm")
 # After the name of a model that can see pictures, wherever models are listed.
 SEES = "  👁"
 LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
+BATCH_FLAGS = ("-b", "--batch-size")
+UBATCH_FLAGS = ("-ub", "--ubatch-size")
+# Models with eyes take a picture in one batch (Gemma's do, all its tokens at once), and a picture
+# is often more than llama-server's default of 512 tokens: it then aborts. So they get this much,
+# unless the launcher says otherwise.
+EYES_BATCH = "2048"
 LAYERS = re.compile(r"all|auto|\d+")
 
 
@@ -185,6 +191,11 @@ def run_args(args):
     from the settings. "all" is sent as a number no model reaches, which every version understands;
     "auto" is llama-server's own choice, so nothing is sent."""
     layers, rest = take(list(args), LAYER_FLAGS)
+    if take(rest, EYES_FLAGS)[0]:
+        if not take(rest, BATCH_FLAGS)[0]:
+            rest += ["-b", EYES_BATCH]
+        if not take(rest, UBATCH_FLAGS)[0]:
+            rest += ["-ub", EYES_BATCH]
     layers = layers or S.gpu_layers
     if layers == "auto" or not LAYERS.fullmatch(layers):
         return rest

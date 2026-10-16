@@ -401,6 +401,11 @@ ordinary entries of the file access settings and can be changed there.
 - **A model doesn't load**: the pane at the bottom shows the last lines of llama-server's log.
   "Too big" in the Memory line means it doesn't fit the graphics card: lower **Context size**,
   tick **Compress context**, or set **On the GPU** to *auto*.
+- **"No answer." under the chat**: llama-server stopped while answering. The note says why,
+  from its log. A picture can be more than the model takes in one batch (Gemma models crash on
+  that): models with eyes get a batch of 2048 by themselves; for bigger pictures add
+  `-b 4096 -ub 4096` to the launcher's options. This is a model setting (Launchers tab), not a
+  persona one: it is fixed when llama-server starts.
 - **A tool's terminal says "must be run from a terminal" or can't ask for a password**: tick
   *Start and stop in a terminal window* under Edit….
 - **A persona doesn't use the files**: check that it has **Files** set (and saved) on the
