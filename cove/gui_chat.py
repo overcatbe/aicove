@@ -6,11 +6,12 @@ import json
 import os
 import re
 import threading
+import zlib
 import time
 
 import markdown
 from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
@@ -38,6 +39,42 @@ CHAT_FACE_SIZE = 110  # the persona picture at the top right of the chat, in pix
 def short(n):
     """12345 -> 12.3k, for the context meter."""
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+# Personas without a picture get a circle with their first letter, in a colour of their own.
+LETTER_COLOURS = ["#c0504d", "#d9822b", "#b8962e", "#6a9a3a", "#2e9a7a", "#2e86ab",
+                  "#4a64c0", "#7a52b8", "#b04a8c", "#7a6a5a"]
+
+
+def face(persona):
+    """The file of a persona's round face: its picture, or its letter circle."""
+    picture = personas.picture_path(persona.id)
+    return round_face(picture) if picture else letter_face(persona.name or persona.id)
+
+
+def letter_face(name):
+    letter = next((c for c in name if c.isalnum()), "?").upper()
+    colour = LETTER_COLOURS[zlib.crc32(name.strip().lower().encode()) % len(LETTER_COLOURS)]
+    out = os.path.join(settings.STATE_DIR, "faces", f"letter-{colour[1:]}-{ord(letter)}.png")
+    if not os.path.exists(out):
+        side = 256
+        image = QPixmap(side, side)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(colour))
+        painter.drawEllipse(0, 0, side, side)
+        font = painter.font()
+        font.setPixelSize(int(side * 0.5))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("white"))
+        painter.drawText(image.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+        painter.end()
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        image.save(out, "PNG")
+    return out
 
 
 def round_face(picture):
@@ -531,9 +568,7 @@ class ChatTab(QWidget):
         for p in sorted(personas.load_all().values(), key=lambda p: p.name.lower()):
             item = QListWidgetItem(p.name)
             item.setData(ROLE, p.id)
-            picture = personas.picture_path(p.id)
-            if picture:
-                item.setIcon(QIcon(round_face(picture)))
+            item.setIcon(QIcon(face(p)))
             self.people.addItem(item)
             if p.id == keep or (keep is None and pick is None and loaded and loaded.name in p.models):
                 pick = item
@@ -559,17 +594,12 @@ class ChatTab(QWidget):
         self.fill_chats()
 
     def show_face(self):
-        picture = personas.picture_path(self.persona.id)
-        if not picture:
-            self.face.hide()
-            return
         ratio = self.devicePixelRatioF()
-        pixmap = QPixmap(round_face(picture)).scaled(
+        pixmap = QPixmap(face(self.persona)).scaled(
             int(CHAT_FACE_SIZE * ratio), int(CHAT_FACE_SIZE * ratio),
             Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         pixmap.setDevicePixelRatio(ratio)
         self.face.setPixmap(pixmap)
-        self.face.show()
 
     def fill_models(self):
         here = {l.name: l for l in launchers.find_launchers() if not l.error}

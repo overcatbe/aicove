@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 from . import fetch, personas, server, settings, tools, voice
 from . import launchers as launcher_files
-from .gui_chat import FACE_SIZE, ChatTab, round_face
+from .gui_chat import FACE_SIZE, ChatTab, face
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
 from .launchers import find_launchers
@@ -2284,9 +2284,7 @@ class Window(QMainWindow):
             item = QListWidgetItem(p.name or p.id)
             item.setData(Qt.ItemDataRole.UserRole, p)
             item.setToolTip(p.path)
-            picture = personas.picture_path(p.id)
-            if picture:
-                item.setIcon(QIcon(round_face(picture)))
+            item.setIcon(QIcon(face(p)))
             self.p_list.addItem(item)
             if target is None or p.id == select:
                 target = item
