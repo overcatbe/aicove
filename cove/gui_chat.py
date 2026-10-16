@@ -11,7 +11,7 @@ import time
 
 import markdown
 from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
@@ -55,7 +55,7 @@ def face(persona):
 def letter_face(name):
     letter = next((c for c in name if c.isalnum()), "?").upper()
     colour = LETTER_COLOURS[zlib.crc32(name.strip().lower().encode()) % len(LETTER_COLOURS)]
-    out = os.path.join(settings.STATE_DIR, "faces", f"letter-{colour[1:]}-{ord(letter)}.png")
+    out = os.path.join(settings.STATE_DIR, "faces", f"letter2-{colour[1:]}-{ord(letter)}.png")
     if not os.path.exists(out):
         side = 256
         image = QPixmap(side, side)
@@ -65,7 +65,11 @@ def letter_face(name):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(colour))
         painter.drawEllipse(0, 0, side, side)
-        font = painter.font()
+        # An outline font: the desktop's may be a bitmap one (Terminus) that can't get this big.
+        font = QFont()
+        font.setFamilies(["DejaVu Sans", "Noto Sans", "Liberation Sans", "Sans Serif"])
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        font.setStyleStrategy(QFont.StyleStrategy.ForceOutline)
         font.setPixelSize(int(side * 0.5))
         font.setBold(True)
         painter.setFont(font)
