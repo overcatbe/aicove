@@ -8,15 +8,15 @@ import threading
 import time
 
 import markdown
-from PyQt6.QtCore import QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QIcon, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import chat, facts, knowledge, launchers, personas, pictures, summary, voice
+from . import chat, facts, knowledge, launchers, personas, pictures, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -28,6 +28,32 @@ ROLE = Qt.ItemDataRole.UserRole
 
 
 PICTURE_WIDTH = 420   # pictures in the chat, in pixels; a click shows them whole
+FACE_SIZE = 40        # persona pictures in the persona list, in pixels
+CHAT_FACE_SIZE = 80   # the persona picture above the chat, in pixels
+
+
+def round_face(picture):
+    """A round copy of a persona picture, as a PNG in the state folder (the chat view can't round
+    pictures itself). Made again when the picture changes."""
+    stamp = os.stat(picture).st_mtime_ns
+    name = os.path.basename(os.path.dirname(picture)) + f"-{stamp}.png"
+    out = os.path.join(settings.STATE_DIR, "faces", name)
+    if not os.path.exists(out):
+        source = QPixmap(picture)
+        side = min(source.width(), source.height())
+        source = source.copy((source.width() - side) // 2, (source.height() - side) // 2, side, side)
+        face = QPixmap(side, side)
+        face.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(face)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addEllipse(0, 0, side, side)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, source)
+        painter.end()
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        face.save(out, "PNG")
+    return out
 
 
 def to_html(text, dark):
@@ -292,6 +318,7 @@ class ChatTab(QWidget):
         self.dirty = False
 
         self.people = QListWidget()
+        self.people.setIconSize(QSize(FACE_SIZE, FACE_SIZE))
         self.people.currentItemChanged.connect(self.on_persona)
         self.chats = QListWidget()
         self.chats.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -444,7 +471,7 @@ class ChatTab(QWidget):
             item.setData(ROLE, p.id)
             picture = personas.picture_path(p.id)
             if picture:
-                item.setIcon(QIcon(QPixmap(picture)))
+                item.setIcon(QIcon(round_face(picture)))
             self.people.addItem(item)
             if p.id == keep or (keep is None and pick is None and loaded and loaded.name in p.models):
                 pick = item
@@ -945,7 +972,7 @@ class ChatTab(QWidget):
         if not messages and not self.live:
             return f"<p style='color:{dim}'>A new chat with {html.escape(self.persona.name)}.</p>"
         picture = personas.picture_path(self.persona.id)
-        face = f"<img src='{QUrl.fromLocalFile(picture).toString()}' width='22' height='22'> " if picture else ""
+        face = f"<img src='{QUrl.fromLocalFile(round_face(picture)).toString()}' width='{CHAT_FACE_SIZE}' height='{CHAT_FACE_SIZE}' align='middle'> " if picture else ""
         last = len(messages) - 1
         parts = []
         name = f"{face}<b>{html.escape(self.persona.name)}</b>"
@@ -995,7 +1022,7 @@ class ChatTab(QWidget):
             if m.get("thinking"):
                 words = len(m["thinking"].split())
                 shown = i in self.open_thinking
-                body += (f"<p><a href='cove:think/{i}' style='color:{dim}'>"
+                body += (f"<p style='margin-top:4px'><a href='cove:think/{i}' style='color:{dim}'>"
                          f"{'▾' if shown else '▸'} Thinking ({words} words)</a></p>")
                 if shown:
                     body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
@@ -1023,7 +1050,7 @@ class ChatTab(QWidget):
                 if i == last:
                     links.append(f"<a href='cove:again/{i}'>answer again</a>")
                 links.append(f"<a href='cove:delete/{i}'>delete</a>")
-            head = f"{name}{model}<br>" if first else ""
+            head = f"<p style='margin:0'>{name}{model}</p>" if first else ""
             links = f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>" if links else ""
             parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}{links}</td></tr></table>")
         if self.live is not None:
@@ -1035,7 +1062,7 @@ class ChatTab(QWidget):
             if self.live["thinking"]:
                 words = len(self.live["thinking"].split())
                 busy = "Thinking… " if not self.live["text"] else "Thinking "
-                body += (f"<p><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
+                body += (f"<p style='margin-top:4px'><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
                          f"{busy}({words} words)</a></p>")
                 if self.live_thinking:
                     body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
@@ -1045,6 +1072,6 @@ class ChatTab(QWidget):
             if not body:
                 body = f"<p style='color:{dim}'><i>…</i></p>"
             first = not messages or messages[-1]["role"] == "user"
-            parts.append(f"<table width='100%' cellpadding='8'><tr><td>"
-                         f"{name + '<br>' if first else ''}{body}</td></tr></table>")
+            head = f"<p style='margin:0'>{name}</p>" if first else ""
+            parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}</td></tr></table>")
         return "".join(parts)

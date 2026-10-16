@@ -22,7 +22,7 @@ import urllib.request
 import zlib
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QProcess, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QProcess, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 from . import fetch, personas, server, settings, tools, voice
 from . import launchers as launcher_files
-from .gui_chat import ChatTab
+from .gui_chat import FACE_SIZE, ChatTab, round_face
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
 from .launchers import find_launchers
@@ -1400,9 +1400,9 @@ class Window(QMainWindow):
         split.setSizes([230, 900])
         self.tabs = QTabWidget()
         self.launcher_page = split
-        self.tabs.addTab(split, "Launchers")
         self.persona_page = self.persona_tab()
         self.tabs.addTab(self.persona_page, "Personas")
+        self.tabs.addTab(split, "Launchers")
         self.tabs.addTab(self.tools_tab(), "Tools")
         self.pw_tab = PasswordsTab(self)
         self.tabs.addTab(self.pw_tab, "Passwords")
@@ -2090,6 +2090,7 @@ class Window(QMainWindow):
         self.p_baseline = None
         self.p_switching = False
         self.p_list = QListWidget()
+        self.p_list.setIconSize(QSize(FACE_SIZE, FACE_SIZE))
         self.p_list.currentItemChanged.connect(self.on_persona_select)
         new_btn = QPushButton("New…")
         new_btn.clicked.connect(self.new_persona)
@@ -2272,6 +2273,9 @@ class Window(QMainWindow):
             item = QListWidgetItem(p.name or p.id)
             item.setData(Qt.ItemDataRole.UserRole, p)
             item.setToolTip(p.path)
+            picture = personas.picture_path(p.id)
+            if picture:
+                item.setIcon(QIcon(round_face(picture)))
             self.p_list.addItem(item)
             if target is None or p.id == select:
                 target = item

@@ -117,6 +117,23 @@ picture takes a while. Pictures are kept in the persona's `chats/pictures/`; del
 or the message deletes them. The `pictures` setting names the tool, or the address of an image
 server running elsewhere (anything with the OpenAI image API). Needs a model that can use tools.
 
+## Personas
+
+A persona is a name, a picture, a prompt and a few settings, tied to the launchers it runs on.
+
+- **Start** loads the persona's model (stopping whatever was loaded). The Chat tab does this by
+  itself when you send.
+- **Model**: the launcher this persona starts with. **Edit model settings…** jumps to it.
+- **Also runs on**: other launchers it may use; **Choose…** ticks them. The Chat tab then offers
+  them all at the top; prompt, knowledge, facts and chats stay the same on each.
+- **Own copy…** gives the persona a launcher of its own, so changing the original no longer
+  changes the persona. Without an own copy the launcher is shared, and the form says with whom.
+- **Settings for this persona** (Thinking, Max answer length, temperature and so on) apply
+  whenever the persona is used. Who wins: the persona, then the launcher, then llama-server's
+  default.
+- Give every persona a **Max answer length**. Without one, a model that starts repeating itself
+  writes until the context is full.
+
 ## Launchers
 
 A launcher is one model file together with its settings. The list on the left shows them;
@@ -158,23 +175,6 @@ Useful options: **Context size** is how much of the chat the model remembers (bi
 more memory). **Parallel chats** set to 1 gives the whole context to one chat. **Compress
 context (K)** and **(V)** roughly halve the context's memory for a small loss in quality.
 **Max answer length** stops an answer that would otherwise run on.
-
-## Personas
-
-A persona is a name, a picture, a prompt and a few settings, tied to the launchers it runs on.
-
-- **Start** loads the persona's model (stopping whatever was loaded). The Chat tab does this by
-  itself when you send.
-- **Model**: the launcher this persona starts with. **Edit model settings…** jumps to it.
-- **Also runs on**: other launchers it may use; **Choose…** ticks them. The Chat tab then offers
-  them all at the top; prompt, knowledge, facts and chats stay the same on each.
-- **Own copy…** gives the persona a launcher of its own, so changing the original no longer
-  changes the persona. Without an own copy the launcher is shared, and the form says with whom.
-- **Settings for this persona** (Thinking, Max answer length, temperature and so on) apply
-  whenever the persona is used. Who wins: the persona, then the launcher, then llama-server's
-  default.
-- Give every persona a **Max answer length**. Without one, a model that starts repeating itself
-  writes until the context is full.
 
 ## Letting a model use your files
 
