@@ -194,7 +194,8 @@ delete = trash
 # What can go along, besides persona.txt and the picture: (part, folders, what it is).
 PARTS = [("knowledge", ["knowledge", "notes"], "Knowledge files (and notes)"),
          ("facts", ["facts"], "Facts: what it remembers about you"),
-         ("chats", ["chats"], "Chats (with their pictures and audio)")]
+         ("chats", ["chats"], "Chats (with their pictures and audio)"),
+         ("bestof", ["best-of.md"], "Best of: the lines of it you kept")]
 MAX_IMPORT = 2 * 1024 ** 3
 
 
@@ -206,6 +207,8 @@ def export(pid, path, parts=("knowledge",)):
         if part not in parts:
             continue
         for d in dirs:
+            if os.path.isfile(os.path.join(root, d)):
+                names.append(d)
             for top, subdirs, files in os.walk(os.path.join(root, d)):
                 subdirs[:] = sorted(x for x in subdirs if not x.startswith("."))
                 names += [os.path.relpath(os.path.join(top, f), root) for f in sorted(files)

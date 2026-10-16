@@ -41,6 +41,10 @@ chats of the one you picked; on the right the chat.
   are listed. If the chosen model can't see, AIcove offers to load one that can; **Send
   anyway** tells the model a picture is there without showing it. Big pictures are made smaller first (1536 px at most). They are
   kept in the persona's `chats/pictures/` folder; click one to open it.
+- **★ keep** under an answer puts it into the persona's **Best of…** (the button at the top). To
+  keep just a line, select it and use the right mouse button: **★ Add to … best of**. It is a
+  plain file, `best-of.md` in the persona's folder, with the date and chat of each entry; edit
+  it in **Best of…** or any editor.
 - After each answer: how long it was and how fast it came, e.g. *312 tokens · 18.4 t/s*
   (thinking counts too). Handy for comparing models and launcher settings.
 - **▸ Thinking** opens what a thinking model considered before answering. It is kept with the
@@ -148,7 +152,7 @@ A persona is a name, a picture, a prompt and a few settings, tied to the launche
   writes until the context is full.
 - **Export…** saves a persona as one `.zip`: to keep, to move to another machine, or to give
   away. Its prompt, settings and picture always go along; tick what else should: knowledge
-  files, facts (what it remembers about you) and chats. Leave facts and chats out when you give
+  files, facts (what it remembers about you), chats and its best of. Leave facts and chats out when you give
   it to someone. **Import…** adds a persona from such a file. If one with that name is already
   here, the new one gets "(2)" after its name. Its models are launcher names: if this machine
   has none of them, pick a model and Save.

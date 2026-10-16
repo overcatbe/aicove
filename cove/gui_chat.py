@@ -14,10 +14,10 @@ from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, Q
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QFileDialog, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QFileDialog, QMenu, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import chat, facts, knowledge, launchers, personas, pictures, server, settings, summary, voice
+from . import bestof, chat, facts, knowledge, launchers, personas, pictures, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -453,6 +453,10 @@ class ChatTab(QWidget):
         self.speaking = None    # (message number, thread) while an answer's audio is being made
         self.playing = None     # message number whose audio plays
         self.player = None
+        self.best_btn = QPushButton("Best of…")
+        self.best_btn.setToolTip("The lines of this persona you kept: ★ keep under an answer, or select a bit "
+                                 "and use the right mouse button")
+        self.best_btn.clicked.connect(self.edit_best)
         self.knowledge_btn = QPushButton("Knowledge…")
         self.knowledge_btn.clicked.connect(self.open_knowledge)
         # The persona's picture, once, at the top right (not with every answer).
@@ -468,6 +472,7 @@ class ChatTab(QWidget):
         under.addWidget(self.facts_btn)
         under.addWidget(self.remember_btn)
         under.addWidget(self.knowledge_btn)
+        under.addWidget(self.best_btn)
         under.addStretch(1)
         rows = QVBoxLayout()
         rows.addStretch(1)
@@ -481,6 +486,8 @@ class ChatTab(QWidget):
         self.view = QTextBrowser()
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self.on_link)
+        self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self.view_menu)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Write here. Enter sends, Shift+Enter makes a new line.")
         self.input.setFixedHeight(96)
@@ -1071,6 +1078,9 @@ class ChatTab(QWidget):
         if what == "summary":
             self.on_summary(number)
             return
+        if what == "keep" and number.isdigit() and int(number) < len(self.chat.messages):
+            self.keep(self.chat.messages[int(number)]["content"])
+            return
         if what == "version" and number.isdigit():
             if self.player is not None:
                 self.player.stop()
@@ -1178,6 +1188,40 @@ class ChatTab(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(where))
 
     # --- facts --------------------------------------------------------------------------
+
+    # --- best of -----------------------------------------------------------------------
+
+    def keep(self, text):
+        if self.persona is None or not text.strip():
+            return
+        try:
+            bestof.add(self.persona.id, text, self.chat.title if self.chat else "")
+        except OSError as e:
+            QMessageBox.critical(self, "Best of", str(e))
+            return
+        self.window.say(f"Kept in {self.persona.name}'s best of ({bestof.path(self.persona.id)}).")
+
+    def view_menu(self, pos):
+        menu = self.view.createStandardContextMenu(pos)
+        picked = self.view.textCursor().selection().toPlainText().strip()
+        if picked and self.persona is not None:
+            menu.addSeparator()
+            menu.addAction(f"★ Add to {self.persona.name}'s best of", lambda: self.keep(picked))
+        menu.exec(self.view.mapToGlobal(pos))
+
+    def edit_best(self):
+        if self.persona is None:
+            return
+        dialog = EditDialog(self, f"{self.persona.name}'s best of", bestof.read(self.persona.id), False)
+        dialog.text.setPlaceholderText("Nothing kept yet. ★ keep under an answer keeps it whole; to keep "
+                                       "just a line, select it and use the right mouse button.")
+        dialog.resize(760, 560)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            bestof.write(self.persona.id, dialog.text.toPlainText())
+        except OSError as e:
+            QMessageBox.critical(self, "Best of", str(e))
 
     def edit_facts(self):
         if self.persona is None:
@@ -1405,6 +1449,8 @@ class ChatTab(QWidget):
                         on = f"<a href='cove:version/{version + 1}'>▶</a>" if version < versions - 1 else "▶"
                         links.insert(0, f"{back} {version + 1}/{versions} {on}")
                 links.append(f"<a href='cove:delete/{i}'>delete</a>")
+                if m["content"]:
+                    links.append(f"<a href='cove:keep/{i}'>★ keep</a>")
                 if m.get("stats"):
                     links.append(f"{m['stats']['tokens']:,} tokens · {m['stats']['speed']} t/s")
             head = f"<p style='margin:0'>{name}{model}</p>" if first else ""
