@@ -195,6 +195,11 @@ more memory). **Parallel chats** set to 1 gives the whole context to one chat. *
 context (K)** and **(V)** roughly halve the context's memory for a small loss in quality.
 **Max answer length** stops an answer that would otherwise run on.
 
+**Thinking budget** caps how much a thinking model thinks before it answers (in tokens; it
+counts against the answer's length too). **When the budget is used up** is a sentence the model
+is told at that moment, so it moves on to answering cleanly. Both apply to every persona on
+that launcher; they take effect when the model is started again.
+
 ## Letting a model use your files
 
 A persona can be allowed to read files of this machine and to write text files. It can never
