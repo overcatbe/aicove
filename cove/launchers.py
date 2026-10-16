@@ -117,6 +117,12 @@ class Launcher:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         return os.path.join(BACKUP_DIR, f"{self.name}.{time.strftime('%Y%m%d-%H%M%S')}.txt")
 
+    @property
+    def sees(self):
+        """Whether it has eyes (an mmproj file that is there), so it can look at pictures."""
+        eyes, _ = take(list(self.args), EYES_FLAGS)
+        return bool(eyes) and os.path.isfile(eyes)
+
     def files(self):
         """The files on disk it runs: the model, and the eyes file if it has one."""
         eyes, _ = take(list(self.args), EYES_FLAGS)

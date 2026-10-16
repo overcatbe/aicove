@@ -2099,12 +2099,23 @@ class Window(QMainWindow):
         lbuttons = QHBoxLayout()
         lbuttons.addWidget(new_btn)
         lbuttons.addWidget(self.p_delete_btn)
+        self.p_export_btn = QPushButton("Export…")
+        self.p_export_btn.setToolTip("Save this persona as one .zip file: to keep, to move to another "
+                                     "machine, or to give to someone")
+        self.p_export_btn.clicked.connect(self.export_persona)
+        import_btn = QPushButton("Import…")
+        import_btn.setToolTip("Add a persona from a .zip file made with Export…")
+        import_btn.clicked.connect(self.import_persona)
+        lbuttons2 = QHBoxLayout()
+        lbuttons2.addWidget(self.p_export_btn)
+        lbuttons2.addWidget(import_btn)
         left = QWidget()
         lbox = QVBoxLayout(left)
         lbox.setContentsMargins(0, 0, 0, 0)
         lbox.addWidget(QLabel("Personas"))
         lbox.addWidget(self.p_list)
         lbox.addLayout(lbuttons)
+        lbox.addLayout(lbuttons2)
 
         self.p_name = QLineEdit()
         self.p_name.textChanged.connect(self.persona_changed)
@@ -2646,6 +2657,68 @@ class Window(QMainWindow):
         self.persona = None
         self.reload_personas(select=persona.id)
         self.p_system.setFocus()
+
+    def export_persona(self):
+        if self.persona is None:
+            return
+        if self.persona_dirty() and not self.resolve_unsaved(self.persona.name, self.save_persona):
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Export {self.persona.name}")
+        box = QVBoxLayout(dialog)
+        note = QLabel("The persona (name, prompt, settings, models it runs on) and its picture always "
+                      "go along. Also:")
+        note.setWordWrap(True)
+        box.addWidget(note)
+        ticks = {}
+        for part, _, label in personas.PARTS:
+            ticks[part] = QCheckBox(label)
+            ticks[part].setChecked(part == "knowledge")
+            box.addWidget(ticks[part])
+        warn = QLabel("Facts and chats are about you: leave them out when you give the persona away.")
+        warn.setWordWrap(True)
+        warn.setEnabled(False)
+        box.addWidget(warn)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Export…")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        box.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export persona",
+                                              os.path.expanduser(f"~/{self.persona.id}.persona.zip"),
+                                              "Persona (*.zip)")
+        if not path:
+            return
+        if not path.endswith(".zip"):
+            path += ".zip"
+        try:
+            n = personas.export(self.persona.id, path, [p for p, t in ticks.items() if t.isChecked()])
+        except OSError as e:
+            QMessageBox.critical(self, "Export persona", str(e))
+            return
+        self.say(f"Exported {self.persona.name} to {path} ({n} files)")
+
+    def import_persona(self):
+        if self.persona_dirty() and not self.resolve_unsaved(self.persona.name, self.save_persona):
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import persona", os.path.expanduser("~"),
+                                              "Persona (*.zip);;All files (*)")
+        if not path:
+            return
+        try:
+            persona = personas.import_(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Import persona", f"Can't import {os.path.basename(path)}: {e}")
+            return
+        here = [m for m in persona.models if launcher_files.get(m) is not None]
+        self.say(f"Imported {persona.name} ({persona.id})" + (
+            "" if here or not persona.models else
+            f". None of its models ({', '.join(persona.models)}) is on this machine: pick one and Save."))
+        self.persona = None
+        self.reload_personas(select=persona.id)
+        self.chat_tab.reload()
 
     def delete_persona(self):
         if self.persona is None:

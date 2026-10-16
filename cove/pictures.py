@@ -124,7 +124,7 @@ def tidy(pid):
             continue
         try:
             with open(os.path.join(chats, name), encoding="utf-8") as f:
-                keep |= {m["picture"] for m in json.load(f).get("messages", []) if m.get("picture")}
+                keep |= {m["picture"] for m in personas.chat_messages(json.load(f)) if m.get("picture")}
         except (OSError, ValueError):
             return   # better keep too much than delete what a chat we can't read needs
     for name in os.listdir(where):

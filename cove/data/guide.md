@@ -33,6 +33,16 @@ chats of the one you picked; on the right the chat.
 - Under each message: **edit**, **delete**, and for the last answer **answer again**. Editing
   your own message offers **Save and answer again**: everything after it goes, and the persona
   answers anew.
+- **answer again** keeps the answer it replaces: **◀ 2/3 ▶** under the last answer switches
+  between them, and the one shown is what the chat goes on with. When you write your next
+  message, the others are dropped.
+- **Picture…** (or drop or paste a picture into the box) sends a picture with your message,
+  for a model that can see: a launcher with an **eyes** file (mmproj). If the chosen model
+  can't see, AIcove offers to load one that can; **Send anyway** tells the model a picture is
+  there without showing it. Big pictures are made smaller first (1536 px at most). They are
+  kept in the persona's `chats/pictures/` folder; click one to open it.
+- After each answer: how long it was and how fast it came, e.g. *312 tokens · 18.4 t/s*
+  (thinking counts too). Handy for comparing models and launcher settings.
 - **▸ Thinking** opens what a thinking model considered before answering. It is kept with the
   answer but never sent back to the model.
 
@@ -47,7 +57,10 @@ named after their first message.
 **Long chats.** A model only takes in so much text (the launcher's context size). When a chat
 fills 70% of it, the older messages are summarised by the model itself, which takes a moment
 ("The chat is getting long — summarising…"), and from then on the persona gets that summary
-instead of them; the newest part stays word for word. The chat on screen stays complete:
+instead of them; the newest part stays word for word. The bar right of the menus,
+**Context 5.2k of 32.8k (16%)**, shows how full it is (prompt, facts, knowledge and the chat;
+it turns orange from 70%). It shows while the persona's model is loaded. The chat on screen
+stays complete:
 
 - The summary shows as **So far** at the top of the chat. **edit** it to correct or add what
   matters; **drop** it and the persona sees everything again (and makes a new summary when
@@ -133,6 +146,12 @@ A persona is a name, a picture, a prompt and a few settings, tied to the launche
   default.
 - Give every persona a **Max answer length**. Without one, a model that starts repeating itself
   writes until the context is full.
+- **Export…** saves a persona as one `.zip`: to keep, to move to another machine, or to give
+  away. Its prompt, settings and picture always go along; tick what else should: knowledge
+  files, facts (what it remembers about you) and chats. Leave facts and chats out when you give
+  it to someone. **Import…** adds a persona from such a file. If one with that name is already
+  here, the new one gets "(2)" after its name. Its models are launcher names: if this machine
+  has none of them, pick a model and Save.
 
 ## Launchers
 

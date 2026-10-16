@@ -7,7 +7,9 @@
 
 import os
 import re
+import shutil
 import time
+import zipfile
 
 from .settings import PERSONA_DIR
 
@@ -145,6 +147,17 @@ class Persona:
         return os.path.getmtime(self.path)
 
 
+def chat_messages(data):
+    """The messages of a chat file's data, with the earlier answers kept with its last question
+    (chat.py), for tidying up the files messages need."""
+    messages = data.get("messages", [])
+    found = list(messages)
+    for m in messages:
+        for turn in m.get("answers") or []:
+            found += turn
+    return found
+
+
 def load_all():
     try:
         names = sorted(os.listdir(PERSONA_DIR))
@@ -172,3 +185,80 @@ def trash(pid):
 
 
 delete = trash
+
+
+# --- one persona as one file --------------------------------------------------------
+# A .zip with the persona's folder in it: persona.txt and picture always, its knowledge (and
+# notes), facts and chats if wanted. Hidden files (caches) stay out.
+
+# What can go along, besides persona.txt and the picture: (part, folders, what it is).
+PARTS = [("knowledge", ["knowledge", "notes"], "Knowledge files (and notes)"),
+         ("facts", ["facts"], "Facts: what it remembers about you"),
+         ("chats", ["chats"], "Chats (with their pictures and audio)")]
+MAX_IMPORT = 2 * 1024 ** 3
+
+
+def export(pid, path, parts=("knowledge",)):
+    """Write persona pid with the wanted PARTS to the .zip at path. Returns the number of files."""
+    root = folder(pid)
+    names = [PERSONA_FILE] + [os.path.basename(p) for p in [picture_path(pid)] if p]
+    for part, dirs, _ in PARTS:
+        if part not in parts:
+            continue
+        for d in dirs:
+            for top, subdirs, files in os.walk(os.path.join(root, d)):
+                subdirs[:] = sorted(x for x in subdirs if not x.startswith("."))
+                names += [os.path.relpath(os.path.join(top, f), root) for f in sorted(files)
+                          if not f.startswith(".") and os.path.isfile(os.path.join(top, f))]
+    tmp = path + ".new"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in names:
+            z.write(os.path.join(root, name), f"{pid}/{name}")
+    os.replace(tmp, path)
+    return len(names)
+
+
+def import_(path):
+    """Add the persona in the .zip at path as a new persona (a new id if its own is taken, and
+    "(2)" after its name if a persona has that name). Returns the new Persona. Raises ValueError
+    for a file that isn't an exported persona, OSError when it can't be read or written."""
+    try:
+        z = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        raise ValueError("not a .zip file") from None
+    with z:
+        members = [m for m in z.infolist() if not m.is_dir()]
+        tops = {m.filename.split("/", 1)[0] for m in members}
+        if len(tops) != 1 or not SAFE_ID.fullmatch(next(iter(tops))):
+            raise ValueError("not an exported persona (it should hold one persona folder)")
+        top = next(iter(tops))
+        for m in members:
+            parts = m.filename.split("/")[1:]
+            if not parts or any(p in ("", ".", "..") for p in parts) or "\\" in m.filename:
+                raise ValueError(f"a file with a strange path: {m.filename}")
+        if f"{top}/{PERSONA_FILE}" not in {m.filename for m in members}:
+            raise ValueError(f"there is no {PERSONA_FILE} in it")
+        if sum(m.file_size for m in members) > MAX_IMPORT:
+            raise ValueError("it is bigger than 2 GB unpacked")
+        pid = new_id(top)
+        os.makedirs(PERSONA_DIR, exist_ok=True)
+        work = os.path.join(PERSONA_DIR, f".import-{pid}")
+        shutil.rmtree(work, ignore_errors=True)
+        try:
+            for m in members:
+                target = os.path.join(work, *m.filename.split("/")[1:])
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with z.open(m) as source, open(target, "wb") as out:
+                    shutil.copyfileobj(source, out)
+            os.replace(work, folder(pid))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    persona = Persona.read(pid)
+    names = {p.name for i, p in load_all().items() if i != pid}
+    if persona.name in names:
+        base, n = persona.name, 2
+        while f"{base} ({n})" in names:
+            n += 1
+        persona.name = f"{base} ({n})"
+        persona.write()
+    return persona
