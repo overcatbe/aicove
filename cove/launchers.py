@@ -21,6 +21,8 @@ from .settings import BACKUP_DIR, LAUNCHER_DIR, S
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 EYES_FLAGS = ("--mmproj", "-mm")
+# After the name of a model that can see pictures, wherever models are listed.
+SEES = "  👁"
 LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
 LAYERS = re.compile(r"all|auto|\d+")
 
@@ -120,8 +122,13 @@ class Launcher:
     @property
     def sees(self):
         """Whether it has eyes (an mmproj file that is there), so it can look at pictures."""
-        eyes, _ = take(list(self.args), EYES_FLAGS)
+        eyes, _ = take(list(getattr(self, "args", [])), EYES_FLAGS)
         return bool(eyes) and os.path.isfile(eyes)
+
+    def label(self, text=None):
+        """text (else its friendly name) with an eye when it can see pictures."""
+        text = text or self.friendly or self.name
+        return text + SEES if self.sees else text
 
     def files(self):
         """The files on disk it runs: the model, and the eyes file if it has one."""

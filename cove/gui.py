@@ -1519,7 +1519,7 @@ class Window(QMainWindow):
         self.switching = True
         self.list.clear()
         for l in find_launchers():
-            item = QListWidgetItem(l.name)
+            item = QListWidgetItem(l.label(l.name))
             item.setData(Qt.ItemDataRole.UserRole, l)
             if l.error:
                 item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -2064,7 +2064,7 @@ class Window(QMainWindow):
             is_running = server is not None and not l.error and l.model == server[0]
             exact = is_running and launcher_files.run_args(l.args) == server[1]
             coming = None if l.error else self.download_of(l.model)
-            item.setText(("▶ " if is_running else "⇣ " if coming else "") + l.name
+            item.setText(("▶ " if is_running else "⇣ " if coming else "") + l.label(l.name)
                          + (f"  ({coming.split()[-1]})" if coming else ""))
             font = item.font()
             font.setBold(bool(is_running))
@@ -2313,7 +2313,7 @@ class Window(QMainWindow):
         self.p_launcher.addItem("— none: only runs on whatever model is loaded —", "")
         self.p_launchers = {l.name: l for l in find_launchers() if not l.error}
         for l in self.p_launchers.values():
-            self.p_launcher.addItem(f"{l.name}  —  {l.friendly}", l.name)
+            self.p_launcher.addItem(l.label(f"{l.name}  —  {l.friendly}"), l.name)
         wanted = persona.launcher if persona else ""
         if wanted and wanted not in self.p_launchers:
             self.p_launcher.addItem(f"{wanted} (no such launcher)", wanted)
@@ -2583,7 +2583,7 @@ class Window(QMainWindow):
         names += [o for o in self.p_others if o not in self.p_launchers and o != launcher.name]
         for name in names:
             l = self.p_launchers.get(name)
-            item = QListWidgetItem(f"{name}  —  {l.friendly}" if l else f"{name} (not on this machine)")
+            item = QListWidgetItem(l.label(f"{name}  —  {l.friendly}") if l else f"{name} (not on this machine)")
             item.setData(Qt.ItemDataRole.UserRole, name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if name in self.p_others else Qt.CheckState.Unchecked)

@@ -626,7 +626,7 @@ class ChatTab(QWidget):
         loaded = chat.loaded_launcher()
         self.model.clear()
         for name in names:
-            self.model.addItem(here[name].friendly or name, name)
+            self.model.addItem(here[name].label(), name)
         if loaded and loaded.name in names:
             self.model.setCurrentIndex(names.index(loaded.name))
         self.show_thinking_control()
@@ -729,6 +729,11 @@ class ChatTab(QWidget):
         self.controls["pictures"].setToolTip(
             "On: the persona may make pictures in this chat (the image server starts when needed)."
             if tools is not False else "This model can't use tools, so no pictures.")
+        self.picture_btn.setToolTip(
+            "Send a picture with your message. Dropping or pasting a picture into the box works too."
+            + ("" if launcher is None or launcher.sees else
+               f"\n\n{launcher.friendly or launcher.name} can't see pictures (no 👁): AIcove offers "
+               "to load a model that can when you send one."))
         can = launchers.can_think(launcher.model) if launcher else None
         combo = self.controls["thinking"]
         combo.setEnabled(can is not False)
@@ -931,7 +936,7 @@ class ChatTab(QWidget):
             return False
         index = self.model.findData(here[0].name)
         if index < 0:
-            self.model.addItem(here[0].friendly or here[0].name, here[0].name)
+            self.model.addItem(here[0].label(), here[0].name)
             index = self.model.count() - 1
         self.model.setCurrentIndex(index)
         return True

@@ -37,9 +37,9 @@ chats of the one you picked; on the right the chat.
   between them, and the one shown is what the chat goes on with. When you write your next
   message, the others are dropped.
 - **Picture…** (or drop or paste a picture into the box) sends a picture with your message,
-  for a model that can see: a launcher with an **eyes** file (mmproj). If the chosen model
-  can't see, AIcove offers to load one that can; **Send anyway** tells the model a picture is
-  there without showing it. Big pictures are made smaller first (1536 px at most). They are
+  for a model that can see: a launcher with an **eyes** file (mmproj), marked 👁 wherever models
+  are listed. If the chosen model can't see, AIcove offers to load one that can; **Send
+  anyway** tells the model a picture is there without showing it. Big pictures are made smaller first (1536 px at most). They are
   kept in the persona's `chats/pictures/` folder; click one to open it.
 - After each answer: how long it was and how fast it came, e.g. *312 tokens · 18.4 t/s*
   (thinking counts too). Handy for comparing models and launcher settings.
