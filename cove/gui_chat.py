@@ -6,12 +6,11 @@ import json
 import os
 import re
 import threading
-import zlib
 import time
 
 import markdown
 from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
@@ -41,9 +40,21 @@ def short(n):
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
-# Personas without a picture get a circle with their first letter, in a colour of their own.
-LETTER_COLOURS = ["#c0504d", "#d9822b", "#b8962e", "#6a9a3a", "#2e9a7a", "#2e86ab",
-                  "#4a64c0", "#7a52b8", "#b04a8c", "#7a6a5a"]
+# Personas without a picture get a circle with their first letter, its colour running from that
+# of the name's first letter (top left) to that of its last (bottom right). A letter's colour is
+# its place on the colour wheel: A red, through orange, green and blue, to Z.
+
+
+def letter_colour(c):
+    """The colour of a letter or digit, as #rrggbb."""
+    c = c.lower()
+    if "a" <= c <= "z":
+        place = (ord(c) - ord("a")) / 26
+    elif c.isdigit():
+        place = int(c) / 10
+    else:
+        place = (ord(c) % 26) / 26
+    return QColor.fromHsvF(place, 0.65, 0.80).name()
 
 
 def face(persona):
@@ -53,9 +64,10 @@ def face(persona):
 
 
 def letter_face(name):
-    letter = next((c for c in name if c.isalnum()), "?").upper()
-    colour = LETTER_COLOURS[zlib.crc32(name.strip().lower().encode()) % len(LETTER_COLOURS)]
-    out = os.path.join(settings.STATE_DIR, "faces", f"letter2-{colour[1:]}-{ord(letter)}.png")
+    letters = [c for c in name if c.isalnum()] or ["?"]
+    letter = letters[0].upper()
+    start, end = letter_colour(letters[0]), letter_colour(letters[-1])
+    out = os.path.join(settings.STATE_DIR, "faces", f"letter3-{start[1:]}-{end[1:]}-{ord(letter)}.png")
     if not os.path.exists(out):
         side = 256
         image = QPixmap(side, side)
@@ -63,7 +75,10 @@ def letter_face(name):
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(colour))
+        gradient = QLinearGradient(0, 0, side, side)
+        gradient.setColorAt(0, QColor(start))
+        gradient.setColorAt(1, QColor(end))
+        painter.setBrush(gradient)
         painter.drawEllipse(0, 0, side, side)
         # An outline font: the desktop's may be a bitmap one (Terminus) that can't get this big.
         font = QFont()
