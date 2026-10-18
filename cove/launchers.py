@@ -17,7 +17,7 @@
 # That machine needs AIcove too. Its model runs there; a tunnel brings it to our port, so the
 # chat doesn't know the difference. What that machine said about its launchers (aicove info)
 # is kept in ~/.cache/aicove/remote/<host>.json and asked again now and then: its names and what
-# its models can do follow from there, its new launchers are added here (as <name>-<host>) and
+# its models can do follow from there, its new launchers are added here (as <host>-<name>) and
 # the ones it no longer has go (into the backup folder). One deleted here isn't added again
 # ("skip" in that file) until the machine is added again with "From another machine…".
 #
@@ -178,11 +178,12 @@ class Launcher:
         eyes, _ = take(list(getattr(self, "args", [])), EYES_FLAGS)
         return bool(eyes) and os.path.isfile(eyes)
 
-    def label(self, text=None):
-        """text (else its friendly name) with an eye when it can see pictures."""
+    def label(self, text=None, where=True):
+        """text (else its friendly name) with an eye when it can see pictures, and the machine
+        it runs on when that is another one (unless where is False)."""
         text = text or self.friendly or self.name
         text += SEES if self.sees else ""
-        return text + ELSEWHERE.format(self.host) if self.host else text
+        return text + ELSEWHERE.format(self.host) if self.host and where else text
 
     def files(self):
         """The files on disk it runs: the model, and the eyes file if it has one."""
@@ -347,9 +348,14 @@ def follow(host, info, again=False):
     save_remote_info(host, info)
     skip = set(remote_info(host).get("skip", []))
     have = {l.remote_name: l for l in find_launchers() if l.host == host}
+    for name, l in have.items():
+        # Before 2026-10-18 they were called <name>-<host>.
+        if l.name == f"{name}-{host}" and not os.path.exists(path_of(f"{host}-{name}")):
+            rename(l, f"{host}-{name}")
+    have = {l.remote_name: l for l in find_launchers() if l.host == host}
     added, removed = [], []
     for name, there in sorted(info["launchers"].items()):
-        mine = f"{name}-{host}"
+        mine = f"{host}-{name}"
         if name in have or name in skip or there.get("error") or not there.get("present") \
                 or os.path.exists(path_of(mine)) or not NAME.fullmatch(name):
             continue
@@ -362,6 +368,16 @@ def follow(host, info, again=False):
             l.retire()
             removed.append(l.name)
     return added, removed
+
+
+def rename(launcher, name):
+    """Give a launcher file a new name; the personas that run on it follow."""
+    from . import personas
+    os.rename(launcher.path, path_of(name))
+    for p in personas.load_all().values():
+        if launcher.name in p.models:
+            p.models = [name if m == launcher.name else m for m in p.models]
+            p.write()
 
 
 def hosts():

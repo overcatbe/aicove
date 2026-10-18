@@ -1322,6 +1322,7 @@ class Window(QMainWindow):
         self.rows = {}
 
         self.list = QListWidget()
+        self.grouped = False
         self.list.currentItemChanged.connect(self.on_select)
         add_btn = QPushButton("Add model…")
         add_btn.setToolTip("From a Hugging Face link, or a model file that is already on this machine")
@@ -1566,23 +1567,53 @@ class Window(QMainWindow):
 
     # --- launcher list -------------------------------------------------------
 
+    def launcher_items(self):
+        """(item, launcher) of the list, without the headings of other machines."""
+        items = [self.list.item(i) for i in range(self.list.count())]
+        return [(it, it.data(Qt.ItemDataRole.UserRole)) for it in items
+                if it.data(Qt.ItemDataRole.UserRole) is not None]
+
+    def list_text(self, l):
+        """A launcher in the list: under its machine's heading (when there are other machines),
+        by its name there."""
+        if l.host:
+            return "    " + l.label(l.remote_name, where=False)
+        return ("    " if self.grouped else "") + l.label(l.name)
+
+    def heading(self, text, tip):
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setForeground(QBrush(self.palette().color(self.palette().ColorRole.Text)))
+        item.setToolTip(tip)
+        self.list.addItem(item)
+
     def reload_list(self, select=None):
         self.switching = True
         self.list.clear()
-        for l in find_launchers():
-            item = QListWidgetItem(l.label(l.name))
-            item.setData(Qt.ItemDataRole.UserRole, l)
-            if l.error:
-                item.setFlags(Qt.ItemFlag.NoItemFlags)
-                item.setToolTip(l.error)
-            else:
-                item.setToolTip(l.desc)
-            self.list.addItem(item)
+        found = find_launchers()
+        others = sorted({l.host for l in found if l.host})
+        self.grouped = bool(others)
+        # This machine's first, then each other machine's under its name.
+        for host in [""] + others:
+            if host:
+                self.heading(f"🖥 {host}", f"Launchers of {host}: they start there, the chat stays here")
+            elif others:
+                self.heading("This machine", "Launchers whose model runs here")
+            for l in sorted((l for l in found if l.host == host), key=lambda l: l.remote_name or l.name):
+                item = QListWidgetItem(self.list_text(l))
+                item.setData(Qt.ItemDataRole.UserRole, l)
+                if l.error:
+                    item.setFlags(Qt.ItemFlag.NoItemFlags)
+                    item.setToolTip(l.error)
+                else:
+                    item.setToolTip(f"{l.name}: {l.desc}" if l.host else l.desc)
+                self.list.addItem(item)
         self.switching = False
         target = None
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            l = item.data(Qt.ItemDataRole.UserRole)
+        for item, l in self.launcher_items():
             if l.error:
                 continue
             if target is None or l.name == select:
@@ -1909,7 +1940,7 @@ class Window(QMainWindow):
     def add_model(self):
         if self.dirty() and not self.resolve_unsaved():
             return
-        known = [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())]
+        known = [l for _, l in self.launcher_items()]
         dialog = AddModel(self, known, self.budget)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1976,8 +2007,7 @@ class Window(QMainWindow):
     def delete_launcher(self):
         if self.launcher is None:
             return
-        others = [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())]
-        others = [l for l in others if l is not self.launcher and not l.error]
+        others = [l for _, l in self.launcher_items() if l is not self.launcher and not l.error]
         # Files only this launcher uses can go with it; never one that is loaded right now.
         own = [f for f in self.launcher.files() + [self.launcher.model + ".part"]
                if os.path.exists(f) and not any(f in l.files() for l in others)]
@@ -2196,13 +2226,11 @@ class Window(QMainWindow):
         self.ask_keyboard()
         server = running_server()
         active = None
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            l = item.data(Qt.ItemDataRole.UserRole)
+        for item, l in self.launcher_items():
             is_running = server is not None and not l.error and l.model == server[0]
             exact = is_running and launcher_files.run_args(l.args) == server[1]
             coming = None if l.error else self.download_of(l.model)
-            item.setText(("▶ " if is_running else "⇣ " if coming else "") + l.label(l.name)
+            item.setText(("▶ " if is_running else "⇣ " if coming else "") + self.list_text(l)
                          + (f"  ({coming.split()[-1]})" if coming else ""))
             font = item.font()
             font.setBold(bool(is_running))
@@ -2524,9 +2552,9 @@ class Window(QMainWindow):
         if launcher is None:
             return
         self.tabs.setCurrentWidget(self.launcher_page)
-        for i in range(self.list.count()):
-            if self.list.item(i).data(Qt.ItemDataRole.UserRole).name == launcher.name:
-                self.list.setCurrentRow(i)
+        for item, l in self.launcher_items():
+            if l.name == launcher.name:
+                self.list.setCurrentItem(item)
 
     def not_here(self, launcher, title):
         """True (after saying so) for another machine's launcher, which can't be copied here."""

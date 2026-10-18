@@ -212,8 +212,9 @@ A second computer with AIcove (say one with a faster graphics card) can run the 
 the chat stays here: personas, chats, files, pictures and voice remain on this machine, only
 the chat text goes back and forth. You need an ssh key that logs in to that machine without a
 password, and a name for it in `~/.ssh/config` (a `Host` line). **From another machine…** asks
-for that name and adds all its launchers, as *name-machine*; wherever models are listed they
-carry **🖥** and the machine's name, and the status says *on* that machine. They follow that
+for that name and adds all its launchers, as *machine-name*. On this tab they are listed under
+a heading with the machine's name, below this machine's own; elsewhere they carry **🖥** and the
+machine's name, and the status says *on* that machine. They follow that
 machine: AIcove asks it when the window opens, when one of its launchers is started, and on
 **Update from other machines**. Then a new launcher there appears here, one deleted there goes
 here too, and a changed name or model shows. One you
