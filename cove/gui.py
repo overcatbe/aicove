@@ -22,7 +22,7 @@ import urllib.request
 import zlib
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QProcess, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QObject, QProcess, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -659,6 +659,39 @@ class Health(threading.Thread):
         while True:
             self.state = server.health()
             time.sleep(2)
+
+
+class Follow(QObject):
+    """Asks the other machines we have launchers of what they have now, so their names,
+    abilities, new and deleted launchers follow here: when the window opens and on "Update from
+    other machines" (Start asks too). A machine that is off is skipped. A plain thread that ends
+    with the window (like Health); news reaches the window as signals."""
+    news = pyqtSignal(str, list, list, bool)
+    done = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.asking = False
+
+    def start(self):
+        if not self.asking:
+            self.asking = True
+            threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        off = []
+        for host in launcher_files.hosts():
+            before = launcher_files.remote_info(host)
+            try:
+                info = server.ask(host)
+                added, removed = launcher_files.follow(host, info)
+            except OSError as e:
+                off.append(str(e))
+                continue
+            if added or removed or launcher_files.remote_info(host) != before:
+                self.news.emit(host, added, removed, True)
+        self.asking = False
+        self.done.emit(off)
 
 
 class NoWheel:
@@ -1298,6 +1331,14 @@ class Window(QMainWindow):
         persona_btn = QPushButton("New persona on this one…")
         persona_btn.setToolTip("A new persona with its own copy of this launcher's model and settings")
         persona_btn.clicked.connect(self.new_persona_on_launcher)
+        remote_btn = QPushButton("From another machine…")
+        remote_btn.setToolTip("A launcher of another machine with AIcove (reached with ssh): its model runs "
+                              "there, the chat here")
+        remote_btn.clicked.connect(self.add_remote)
+        self.update_btn = QPushButton("Update from other machines")
+        self.update_btn.setToolTip("Ask the other machines what launchers they have now (AIcove also asks "
+                                   "when the window opens and when one of theirs is started)")
+        self.update_btn.clicked.connect(self.update_remote)
         rename_btn = QPushButton("Rename…")
         rename_btn.clicked.connect(self.rename_launcher)
         delete_btn = QPushButton("Delete")
@@ -1313,6 +1354,8 @@ class Window(QMainWindow):
         lbox.addWidget(add_btn)
         lbox.addWidget(new_btn)
         lbox.addWidget(persona_btn)
+        lbox.addWidget(remote_btn)
+        lbox.addWidget(self.update_btn)
         lbox.addLayout(lbuttons)
 
         form = QWidget()
@@ -1362,6 +1405,7 @@ class Window(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(form)
+        self.form_scroll = scroll
 
         mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         self.preview = QPlainTextEdit()
@@ -1424,6 +1468,9 @@ class Window(QMainWindow):
         self.build_services()
         self.health = Health()
         self.health.start()
+        self.follow = Follow(self)
+        self.follow.news.connect(self.follow_done)
+        self.follow.done.connect(self.follow_finished)
 
         central = QWidget()
         cbox = QVBoxLayout(central)
@@ -1446,6 +1493,7 @@ class Window(QMainWindow):
         self.proc.errorOccurred.connect(self.proc_done)
 
         self.reload_list()
+        self.follow.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
@@ -1568,6 +1616,8 @@ class Window(QMainWindow):
         for flag, row in self.rows.items():
             row.set(opts.get(flag))
         self.extra.setText(shlex.join(extra))
+        # Another machine's launcher is set up there.
+        self.form_scroll.setEnabled(not launcher.host)
         self.loading = False
         self.baseline = self.state()
         self.changed()
@@ -1679,6 +1729,8 @@ class Window(QMainWindow):
     def changed(self, *_):
         if self.loading or self.launcher is None:
             return
+        if self.launcher.host:
+            return self.show_remote()
         model = self.model.currentText().strip()
         size = file_size(model)
         coming = self.download_of(model)
@@ -1702,6 +1754,85 @@ class Window(QMainWindow):
         self.revert_btn.setEnabled(dirty)
         self.save_btn.setEnabled(dirty)
         self.start_btn.setText("Save && Start" if dirty else "Start")
+
+    def show_remote(self):
+        l = self.launcher
+        tools = l.info.get("tools")
+        self.model_info.setText(f"On {l.host}: " + (l.info.get("model") or "not asked yet — Start asks")
+                                + {True: "  ·  can use files", False: "  ·  can't use files"}.get(tools, ""))
+        self.model_info.setToolTip(f"Its settings are {l.remote_name}'s on {l.host}: change them there.")
+        self.model_info.setStyleSheet("")
+        self.mem_info.setText(f"Memory: {l.host}'s, not this machine's.")
+        self.mem_info.setStyleSheet("")
+        self.preview.setPlainText(f"ssh {l.host} aicove start {l.remote_name}\n"
+                                  f"then a tunnel brings it here to port {S.llama_port}")
+        self.setWindowTitle(f"AIcove — {l.name}")
+        self.revert_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self.start_btn.setText("Start")
+
+    def add_remote(self):
+        """New launchers for the launchers of another machine."""
+        if self.dirty() and not self.resolve_unsaved():
+            return
+        known = launcher_files.hosts() or [""]
+        host, ok = QInputDialog.getText(self, "From another machine",
+                                        "The machine, as ssh knows it (a Host in ~/.ssh/config):", text=known[0])
+        host = host.strip()
+        if not ok or not host:
+            return
+        if not launcher_files.NAME.fullmatch(host):
+            QMessageBox.warning(self, "From another machine", "That is not a plain name.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            info = server.ask(host)
+            added, removed = launcher_files.follow(host, info, again=True)
+        except OSError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "From another machine",
+                                f"{e}\n\nThat machine needs AIcove, and this one an ssh key there that works "
+                                f"without a password (try: ssh {host} true).")
+            return
+        QApplication.restoreOverrideCursor()
+        self.followed(host, added, removed)
+        if not added:
+            QMessageBox.information(self, "From another machine", f"Nothing new on {host}: "
+                                    + ("all its launchers are here already." if info["launchers"]
+                                       else "it has no launchers."))
+            return
+        self.launcher = None
+        self.reload_list(select=added[0])
+
+    def followed(self, host, added, removed):
+        """After our launchers of host were made to match it."""
+        if added:
+            self.say(f"From {host}: {', '.join(added)}")
+        if removed:
+            self.say(f"{host} no longer has these, so they went here too (copies in {BACKUP_DIR}): "
+                     + ", ".join(removed))
+
+    def update_remote(self):
+        if not launcher_files.hosts():
+            QMessageBox.information(self, "Update", "No launchers of another machine yet: "
+                                    "add one with \"From another machine…\".")
+            return
+        self.update_btn.setEnabled(False)
+        self.say(f"Asking {', '.join(launcher_files.hosts())}...")
+        self.follow.start()
+
+    def follow_finished(self, off):
+        if not self.update_btn.isEnabled():
+            for line in off:
+                self.say(line)
+            self.say("Up to date." if not off else "The others are up to date.")
+        self.update_btn.setEnabled(True)
+
+    def follow_done(self, host, added, removed, changed):
+        """The watcher asked host again; show what changed (unless the form is being edited)."""
+        self.followed(host, added, removed)
+        if changed and not self.dirty() and not self.busy():
+            self.reload_list(select=self.launcher.name if self.launcher else None)
 
     def resolve_unsaved(self, name=None, save=None):
         """Ask what to do with unsaved changes. False = stay where we are."""
@@ -1757,7 +1888,7 @@ class Window(QMainWindow):
         return True
 
     def new_launcher(self):
-        if self.launcher is None:
+        if self.launcher is None or self.not_here(self.launcher, "New launcher"):
             return
         form = self.checked_form()
         if form is None:
@@ -1884,6 +2015,10 @@ class Window(QMainWindow):
             QMessageBox.critical(self, "Delete launcher", str(e))
             return
         self.say(f"Deleted {self.launcher.name} (kept as {dest})")
+        if self.launcher.host:
+            launcher_files.skip_remote(self.launcher)
+            self.say(f"It won't come back from {self.launcher.host} (unless you add {self.launcher.host} again "
+                     "with \"From another machine…\").")
         if drop_files:
             for f in own:
                 try:
@@ -1949,7 +2084,7 @@ class Window(QMainWindow):
     def save_and_start(self):
         if self.launcher is None or self.busy() or not self.save():
             return
-        if not os.path.isfile(self.launcher.model):
+        if not self.launcher.present:
             coming = self.download_of(self.launcher.model)
             QMessageBox.warning(self, "Start", f"The model is still on its way ({coming}):\n{self.launcher.model}"
                                 if coming else f"Model file not found:\n{self.launcher.model}")
@@ -2080,7 +2215,9 @@ class Window(QMainWindow):
         elif active is None:
             self.status.setText(f"{word}: {os.path.basename(server[0])} (port {S.llama_port})")
         elif active[1]:
-            self.status.setText(f"{word}: {active[0].friendly} (port {S.llama_port})")
+            l = active[0]
+            where = f"  —  on {l.host} 🖥" if l.host else f" (port {S.llama_port})"
+            self.status.setText(f"{word}: {l.friendly}{where}")
         else:
             self.status.setText(f"{word}: {os.path.basename(server[0])} with other settings — "
                                 "Start again to apply the saved ones.")
@@ -2374,7 +2511,7 @@ class Window(QMainWindow):
         if launcher is None:
             QMessageBox.warning(self, "Start", f"Pick a model for {self.persona.name} first.")
             return
-        if not os.path.isfile(launcher.model):
+        if not launcher.present:
             coming = self.download_of(launcher.model)
             QMessageBox.warning(self, "Start", f"The model is still on its way ({coming}):\n{launcher.model}"
                                 if coming else f"Model file not found:\n{launcher.model}")
@@ -2391,8 +2528,17 @@ class Window(QMainWindow):
             if self.list.item(i).data(Qt.ItemDataRole.UserRole).name == launcher.name:
                 self.list.setCurrentRow(i)
 
+    def not_here(self, launcher, title):
+        """True (after saying so) for another machine's launcher, which can't be copied here."""
+        if launcher.host:
+            QMessageBox.information(self, title, f"{launcher.name} is {launcher.remote_name} on {launcher.host}: "
+                                    f"make the copy there, then add it with \"From another machine…\".")
+        return bool(launcher.host)
+
     def own_copy(self, persona, launcher):
         """Give a persona its own copy of a launcher (model + settings); the new launcher's name or None."""
+        if self.not_here(launcher, "Own copy"):
+            return None
         name = persona.id.strip("-._")
         if os.path.exists(launcher_files.path_of(name)):
             name = self.ask_launcher_name(f"{name} is taken — name for {persona.name}'s launcher")
@@ -2435,6 +2581,8 @@ class Window(QMainWindow):
         if self.persona_dirty() and not self.resolve_unsaved(self.persona.name, self.save_persona):
             return
         source = self.launcher
+        if self.not_here(source, "New persona"):
+            return
         name, ok = QInputDialog.getText(self, "New persona", f"Name of the persona that gets {source.name}'s "
                                                              "model and settings:")
         name = name.strip()
@@ -2523,7 +2671,8 @@ class Window(QMainWindow):
             others = [p.name for p in personas.load_all().values()
                       if p.launcher == launcher.name and p.id != self.persona.id]
             self.p_launcher_info.setText(
-                f"{os.path.basename(launcher.model)}  ·  {shlex.join(launcher.args)}"
+                (f"{launcher.remote_name} on {launcher.host}" if launcher.host else
+                 f"{os.path.basename(launcher.model)}  ·  {shlex.join(launcher.args)}")
                 + (f"\nShared with {', '.join(others)} — a change to its settings changes them too."
                    if others else ""))
         # File access needs a model whose chat template knows tools.

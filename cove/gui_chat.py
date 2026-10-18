@@ -762,9 +762,10 @@ class ChatTab(QWidget):
         elif loaded is None:
             text = "No model loaded"
         elif loaded.name == wanted:
-            text = "Ready" if self.window.health.state == "ready" else "Loading…"
+            text = ("Ready" if self.window.health.state == "ready" else "Loading…") \
+                + (f" · on {loaded.host} 🖥" if loaded.host else "")
         else:
-            text = f"Loaded: {loaded.friendly or loaded.name}"
+            text = f"Loaded: {loaded.label()}"
         self.state.setText(text)
         self.load_btn.setEnabled(not self.window.busy() and (loaded is None or loaded.name != wanted))
         self.measure()
@@ -921,7 +922,7 @@ class ChatTab(QWidget):
         wanted = launchers.get(self.model.currentData() or "")
         if wanted is not None and wanted.sees:
             return True
-        here = [l for l in launchers.find_launchers() if not l.error and l.sees and os.path.isfile(l.model)]
+        here = [l for l in launchers.find_launchers() if not l.error and l.sees and l.present]
         # Its own models first.
         here.sort(key=lambda l: (l.name not in self.persona.models, l.friendly.lower()))
         now = wanted.friendly if wanted else "This model"

@@ -8,8 +8,22 @@
 #   gpu_layers: all                         optional: all, auto or a number (else the default in the settings)
 #   options: -c 32768 --parallel 1 --jinja  everything else for llama-server, as on the command line
 #
+# A launcher of another machine (reached with ssh, a name from ~/.ssh/config) has instead:
+#
+#   name: Qwen3.6 35B (big card)            optional; else the other machine's name for it
+#   host: gpubox                            the machine
+#   launcher: qwen36                        its launcher there (else the same name as this file)
+#
+# That machine needs AIcove too. Its model runs there; a tunnel brings it to our port, so the
+# chat doesn't know the difference. What that machine said about its launchers (aicove info)
+# is kept in ~/.cache/aicove/remote/<host>.json and asked again now and then: its names and what
+# its models can do follow from there, its new launchers are added here (as <name>-<host>) and
+# the ones it no longer has go (into the backup folder). One deleted here isn't added again
+# ("skip" in that file) until the machine is added again with "From another machine…".
+#
 # The window edits these; editing them by hand keeps working.
 
+import json
 import os
 import re
 import shlex
@@ -17,12 +31,14 @@ import shutil
 import struct
 import time
 
-from .settings import BACKUP_DIR, LAUNCHER_DIR, S
+from .settings import BACKUP_DIR, LAUNCHER_DIR, S, STATE_DIR
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 EYES_FLAGS = ("--mmproj", "-mm")
 # After the name of a model that can see pictures, wherever models are listed.
 SEES = "  👁"
+# After the name of another machine's launcher.
+ELSEWHERE = "  🖥 {}"
 LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
 BATCH_FLAGS = ("-b", "--batch-size")
 UBATCH_FLAGS = ("-ub", "--ubatch-size")
@@ -31,6 +47,9 @@ UBATCH_FLAGS = ("-ub", "--ubatch-size")
 # unless the launcher says otherwise.
 EYES_BATCH = "2048"
 LAYERS = re.compile(r"all|auto|\d+")
+REMOTE_DIR = os.path.join(STATE_DIR, "remote")
+# The model "path" of a launcher of another machine: remote:<host>/<its launcher there>.
+REMOTE = "remote:"
 
 
 def models_dir():
@@ -94,12 +113,17 @@ class Launcher:
         self.error = None
         self.desc = self.model = self.friendly = self.persona = ""
         self.args = []
+        self.host = self.remote_name = ""
+        self.info = {}
         fields = {}
         with open(path, encoding="utf-8") as f:
             for line in f.read().split("\n"):
                 key, sep, value = line.partition(":")
                 if sep and not line.startswith("#") and key.strip() not in fields:
                     fields[key.strip()] = value.strip()
+        if fields.get("host"):
+            self.remote(fields)
+            return
         if not fields.get("model"):
             self.error = "no \"model:\" line"
             return
@@ -121,6 +145,27 @@ class Launcher:
         if fields.get("eyes"):
             self.args = ["--mmproj", full_path(fields["eyes"])] + self.args
 
+    def remote(self, fields):
+        self.host = fields["host"]
+        self.remote_name = fields.get("launcher") or self.name
+        if not (NAME.fullmatch(self.host) and NAME.fullmatch(self.remote_name)):
+            self.error = "\"host:\" and \"launcher:\" must be plain names"
+            return
+        self.model = f"{REMOTE}{self.host}/{self.remote_name}"
+        known = remote_info(self.host).get("launchers")
+        self.info = (known or {}).get(self.remote_name, {})
+        self.friendly = fields.get("name") or self.info.get("friendly") or self.remote_name
+        self.desc = fields.get("description") or self.info.get("desc", "")
+        self.persona = fields.get("persona", "")
+        if known is not None and self.remote_name not in known:
+            self.error = f"{self.host} no longer has {self.remote_name}"
+
+    @property
+    def present(self):
+        """Whether it can be started from here: its model file is there, or it is another
+        machine's (that one finds out when asked)."""
+        return bool(self.host) or os.path.isfile(self.model)
+
     def backup(self):
         os.makedirs(BACKUP_DIR, exist_ok=True)
         return os.path.join(BACKUP_DIR, f"{self.name}.{time.strftime('%Y%m%d-%H%M%S')}.txt")
@@ -128,16 +173,21 @@ class Launcher:
     @property
     def sees(self):
         """Whether it has eyes (an mmproj file that is there), so it can look at pictures."""
+        if self.host:
+            return bool(self.info.get("sees"))
         eyes, _ = take(list(getattr(self, "args", [])), EYES_FLAGS)
         return bool(eyes) and os.path.isfile(eyes)
 
     def label(self, text=None):
         """text (else its friendly name) with an eye when it can see pictures."""
         text = text or self.friendly or self.name
-        return text + SEES if self.sees else text
+        text += SEES if self.sees else ""
+        return text + ELSEWHERE.format(self.host) if self.host else text
 
     def files(self):
         """The files on disk it runs: the model, and the eyes file if it has one."""
+        if self.host:
+            return []
         eyes, _ = take(list(self.args), EYES_FLAGS)
         return [self.model] + ([eyes] if eyes else [])
 
@@ -263,9 +313,87 @@ def template_of(path):
     return _template_cache[key]
 
 
+def remote_info(host):
+    """What another machine said about its launchers when last asked ({} if never)."""
+    try:
+        with open(os.path.join(REMOTE_DIR, host + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_remote_info(host, info):
+    """Keep what host said; the launchers deleted here (skip) stay remembered."""
+    skip = info["skip"] if "skip" in info else remote_info(host).get("skip", [])
+    info = dict(info, skip=sorted(set(skip)))
+    os.makedirs(REMOTE_DIR, exist_ok=True)
+    with open(os.path.join(REMOTE_DIR, host + ".json"), "w", encoding="utf-8") as f:
+        json.dump(info, f, indent=1)
+
+
+def skip_remote(launcher):
+    """A launcher of another machine was deleted here: don't add it back."""
+    info = remote_info(launcher.host)
+    info["skip"] = sorted(set(info.get("skip", [])) | {launcher.remote_name})
+    save_remote_info(launcher.host, info)
+
+
+def follow(host, info, again=False):
+    """Make our launchers of host match what it has now (info from aicove info there).
+    again: the machine is added again, the ones deleted here come back too.
+    Returns (added, removed): names of our launcher files."""
+    if again:
+        info = dict(info, skip=[])
+    save_remote_info(host, info)
+    skip = set(remote_info(host).get("skip", []))
+    have = {l.remote_name: l for l in find_launchers() if l.host == host}
+    added, removed = [], []
+    for name, there in sorted(info["launchers"].items()):
+        mine = f"{name}-{host}"
+        if name in have or name in skip or there.get("error") or not there.get("present") \
+                or os.path.exists(path_of(mine)) or not NAME.fullmatch(name):
+            continue
+        os.makedirs(LAUNCHER_DIR, exist_ok=True)
+        with open(path_of(mine), "x", encoding="utf-8") as f:
+            f.write(f"host: {host}\nlauncher: {name}\n")
+        added.append(mine)
+    for name, l in have.items():
+        if name not in info["launchers"]:
+            l.retire()
+            removed.append(l.name)
+    return added, removed
+
+
+def hosts():
+    """The other machines we have launchers of."""
+    return sorted({l.host for l in find_launchers() if l.host})
+
+
+def remote_said(path, key):
+    """For a model of another machine (remote:<host>/<launcher>): what it said about key, or None."""
+    host, _, name = path[len(REMOTE):].partition("/")
+    return remote_info(host).get("launchers", {}).get(name, {}).get(key)
+
+
+def info():
+    """What this machine tells another one about its launchers (aicove info)."""
+    found = {}
+    for l in find_launchers():
+        if l.host:
+            continue
+        found[l.name] = {"friendly": l.friendly, "desc": l.desc, "error": l.error,
+                         "model": os.path.basename(l.model), "present": not l.error and l.present,
+                         "sees": not l.error and l.sees,
+                         "tools": None if l.error else can_use_tools(l.model),
+                         "think": None if l.error else can_think(l.model)}
+    return {"port": S.llama_port, "host": S.host, "launchers": found}
+
+
 def can_use_tools(path):
     """Whether the model's chat template knows tools (file access needs them): True, False,
     or None when the file can't be read."""
+    if path.startswith(REMOTE):
+        return remote_said(path, "tools")
     template = template_of(path)
     return None if template is None else ("tools" in template or "tool_call" in template)
 
@@ -273,5 +401,7 @@ def can_use_tools(path):
 def can_think(path):
     """Whether thinking can be switched on and off for this model (its template reads
     enable_thinking): True, False, or None when the file can't be read."""
+    if path.startswith(REMOTE):
+        return remote_said(path, "think")
     template = template_of(path)
     return None if template is None else "enable_thinking" in template

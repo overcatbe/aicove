@@ -194,7 +194,7 @@ def launcher_for(persona):
     or None."""
     for name in persona.models:
         launcher = launchers.get(name)
-        if launcher is not None and not launcher.error and os.path.isfile(launcher.model):
+        if launcher is not None and not launcher.error and launcher.present:
             return launcher
     return None
 

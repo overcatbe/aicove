@@ -9,6 +9,7 @@ aicove stop                     stop the model
 aicove stop all                 stop the model and the tools marked for it
 aicove status                   what is running
 aicove list                     launchers and personas
+aicove info                     this machine's launchers as JSON (what another machine asks)
 aicove tools                    the tools of this machine and whether they run
 aicove tools start|stop NAME    one of them
 aicove passwords [sync]         names of the password entries | sync the store
@@ -76,6 +77,11 @@ def main(argv=None):
         return 0
     if cmd == "list" and not args:
         return show_list()
+    if cmd == "info" and not args:
+        import json
+        from . import launchers
+        print(json.dumps(launchers.info()))
+        return 0
     if cmd == "passwords":
         from . import passwords
         return passwords.main(args)

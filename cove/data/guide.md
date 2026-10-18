@@ -189,6 +189,8 @@ A launcher is one model file together with its settings. The list on the left sh
   run on their own and continue where they stopped, also after closing AIcove.
 - **New from this one…** copies the form into a new launcher.
 - **New persona on this one…** makes a persona with its own copy of this launcher.
+- **From another machine…** adds the launchers of another computer of yours (see below).
+- **Update from other machines** asks those computers what they have now.
 - **Rename…**, **Delete**: Delete removes the launcher (a copy is kept). If no other launcher
   uses its model file, the box **Also delete the model file from the disk** offers to delete the
   file too, with its eyes file and a half-finished download. Not while that model is loaded:
@@ -203,6 +205,25 @@ context (K)** and **(V)** roughly halve the context's memory for a small loss in
 counts against the answer's length too). **When the budget is used up** is a sentence the model
 is told at that moment, so it moves on to answering cleanly. Both apply to every persona on
 that launcher; they take effect when the model is started again.
+
+**Models on another machine**
+
+A second computer with AIcove (say one with a faster graphics card) can run the model while
+the chat stays here: personas, chats, files, pictures and voice remain on this machine, only
+the chat text goes back and forth. You need an ssh key that logs in to that machine without a
+password, and a name for it in `~/.ssh/config` (a `Host` line). **From another machine…** asks
+for that name and adds all its launchers, as *name-machine*; wherever models are listed they
+carry **🖥** and the machine's name, and the status says *on* that machine. They follow that
+machine: AIcove asks it when the window opens, when one of its launchers is started, and on
+**Update from other machines**. Then a new launcher there appears here, one deleted there goes
+here too, and a changed name or model shows. One you
+delete here stays away until you add the machine again. **Start** starts the model over there with that machine's own settings and
+opens an ssh tunnel, so to the chat it looks like a model here. **Stop llama-server** stops it
+there and closes the tunnel. The settings of such a launcher are changed on the machine it
+belongs to. Its model stays private there: nothing is opened to the network.
+
+By hand, a launcher file with two lines does the same: `host: <name from ~/.ssh/config>` and
+`launcher: <its launcher there>`.
 
 ## Letting a model use your files
 
@@ -373,6 +394,7 @@ The window does all of this; these are the same actions as commands.
 | `aicove stop all` | stop the model and the tools marked for it |
 | `aicove status` | what is running |
 | `aicove list` | launchers and personas |
+| `aicove info` | this machine's launchers as JSON (what another machine asks for) |
 | `aicove chat PERSONA` | that persona's chats |
 | `aicove chat PERSONA "message"` | a new chat (loads the persona's model when needed) |
 | `aicove chat PERSONA last "message"` | go on with its latest chat (or give a chat's id) |
