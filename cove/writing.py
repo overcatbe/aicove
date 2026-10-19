@@ -1544,6 +1544,10 @@ def normalised(text):
     return "".join(out), where
 
 
+FUZZY_QUOTE = 600      # characters: longer quotes are only found exactly
+FUZZY_NEAR = 5000      # characters around where a quote was that are searched for a likeness
+
+
 def find_quote(text, quote, near=0):
     """Where a quoted passage is in text: (start, end), or None. Exact first, then with quotes,
     dashes and spaces evened out, then the most alike stretch of sentences."""
@@ -1563,8 +1567,13 @@ def find_quote(text, quote, near=0):
     if places:
         at = min(places, key=lambda p: abs(where[p] - near))
         return where[at], where[at + len(q) - 1] + 1
-    sentences = [(m.start(), m.end()) for m in re.finditer(r"[^.!?…\n]+[.!?…]*[”\"’']?", text) if m.group(0).strip()]
+    # The most alike stretch: only for a short quote, and only near where it was. (Comparing a
+    # long one at every place of a chapter takes minutes; it is outdated instead.)
     n = max(1, len(re.findall(r"[.!?…]+", quote)))
+    if len(quote) > FUZZY_QUOTE or n > 6:
+        return None
+    sentences = [(m.start(), m.end()) for m in re.finditer(r"[^.!?…\n]+[.!?…]*[”\"’']?", text)
+                 if m.group(0).strip() and abs(m.start() - near) < FUZZY_NEAR]
     best, span = 0.0, None
     for size in {n, n + 1}:
         for i in range(0, max(0, len(sentences) - size) + 1):
@@ -1579,8 +1588,14 @@ def find_quote(text, quote, near=0):
 
 
 def alike(a, b):
+    """How alike two passages are, 0 to 1. Long ones are compared word by word (letter by
+    letter takes too long)."""
     import difflib
-    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() if a or b else 1.0
+    if not a and not b:
+        return 1.0
+    if len(a) + len(b) > 1000:
+        a, b = a.split(), b.split()
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
 
 
 def review_path(project, file):
