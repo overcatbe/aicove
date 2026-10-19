@@ -188,7 +188,9 @@ per run).
 ## Writing
 
 For long texts: a novel, a fic. A project is a list of chapters, each one a Markdown file
-whose first `# ` line is its title.
+whose first `# ` line is its title. The top row has the project, the **Project** menu (New
+project…, Import…, Export…, Rename…, Delete project…, Open folder, Keep versions), **Story
+memory…** and **Copy for AO3**.
 
 - **Import…**: paste text, or **From file…**: HTML (an AO3 download or a saved page keeps the
   italics best), PDF (needs `pdftotext`; check the paragraphs), Markdown or plain text. It is

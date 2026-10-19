@@ -18,8 +18,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QSplitter, QTabWidget,
-    QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QSizePolicy,
+    QSplitter, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import chat, facts, launchers, personas, summary, writing
@@ -28,6 +28,14 @@ from .settings import STATE_DIR
 
 ROLE = Qt.ItemDataRole.UserRole
 SAVE_AFTER = 1500      # ms without typing before the chapter is written to its file
+
+
+def loose(*labels):
+    """Labels whose text changes (and can get long) wrap, and never make the window wider."""
+    for label in labels:
+        label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, label.sizePolicy().verticalPolicy())
+        label.setMinimumWidth(1)
 
 
 class TextBox(QPlainTextEdit):
@@ -572,7 +580,7 @@ class TalkPanel(QWidget):
         self.view.setOpenExternalLinks(True)
         self.target = QLabel()
         self.target.setEnabled(False)
-        self.target.setWordWrap(True)
+        loose(self.state, self.target)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Ask about the chapter or the selected text, or say what to change "
                                       "(Enter sends, Shift+Enter is a new line)")
@@ -1467,7 +1475,7 @@ class ReviewPanel(QWidget):
         frow.addStretch(1)
         self.status = QLabel()
         self.status.setEnabled(False)
-        self.status.setWordWrap(True)
+        loose(self.status)
         self.list = QListWidget()
         self.list.setWordWrap(True)
         self.list.currentItemChanged.connect(self.pick)
@@ -1881,40 +1889,43 @@ class WritingTab(QWidget):
         self.memory_dialog = None
 
         self.projects = QComboBox()
-        self.projects.setMinimumWidth(260)
+        self.projects.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.projects.setMinimumContentsLength(24)
         self.projects.currentIndexChanged.connect(self.pick_project)
-        new_btn = QPushButton("New project…")
-        new_btn.clicked.connect(self.new_project)
-        import_btn = QPushButton("Import…")
-        import_btn.setToolTip("Pasted text, an HTML file or a PDF, split into chapters")
-        import_btn.clicked.connect(self.import_text)
-        rename_btn = QPushButton("Rename…")
-        rename_btn.clicked.connect(self.rename_project)
+        # What is done now and then goes into a menu, so the row stays short.
+        menu = QMenu(self)
+        for label, tip, act in (("New project…", "", self.new_project),
+                                ("Import…", "Pasted text, an HTML file or a PDF, split into chapters", self.import_text),
+                                ("Export…", "The whole project as one file: Markdown, text, HTML, PDF, EPUB or Word",
+                                 self.export),
+                                ("Rename…", "", self.rename_project),
+                                ("Delete project…", "", self.delete_project),
+                                ("Open folder", "", self.open_folder)):
+            a = menu.addAction(label)
+            a.setToolTip(tip)
+            a.triggered.connect(act)
+        menu.addSeparator()
+        self.git_box = menu.addAction("Keep versions (git)")
+        self.git_box.setCheckable(True)
+        self.git_box.setToolTip("A commit in the project's own folder each time you leave a chapter you "
+                                "changed, so every earlier version can be got back")
+        self.git_box.toggled.connect(self.set_git)
+        menu.setToolTipsVisible(True)
+        project_btn = QPushButton("Project")
+        project_btn.setMenu(menu)
         post_btn = QPushButton("Copy for AO3")
         post_btn.setToolTip("The open chapter (without its title) on the clipboard as HTML paragraphs with "
                             "italics: paste it into AO3's HTML box, or its rich text box")
         post_btn.clicked.connect(self.copy_for_posting)
-        export_btn = QPushButton("Export…")
-        export_btn.setToolTip("The whole project as one file: Markdown, text, HTML, PDF, EPUB or Word")
-        export_btn.clicked.connect(self.export)
         memory_btn = QPushButton("Story memory…")
         memory_btn.setToolTip("What the models know about the whole story: chapter notes, cast, threads, your "
-                              "plans. Build it, read it, correct it.")
+                              "style and plans. Build it, read it, correct it.")
         memory_btn.clicked.connect(self.show_memory)
-        delete_btn = QPushButton("Delete project…")
-        delete_btn.clicked.connect(self.delete_project)
-        folder_btn = QPushButton("Open folder")
-        folder_btn.clicked.connect(self.open_folder)
-        self.git_box = QCheckBox("Keep versions (git)")
-        self.git_box.setToolTip("A commit in the project's own folder each time you leave a chapter you "
-                                "changed, so every earlier version can be got back")
-        self.git_box.toggled.connect(self.set_git)
         top = QHBoxLayout()
         top.addWidget(QLabel("Project:"))
         top.addWidget(self.projects)
-        for b in (new_btn, import_btn, memory_btn, post_btn, export_btn, rename_btn, delete_btn, folder_btn):
+        for b in (project_btn, memory_btn, post_btn):
             top.addWidget(b)
-        top.addWidget(self.git_box)
         top.addStretch(1)
 
         self.list = QListWidget()
@@ -1986,6 +1997,7 @@ class WritingTab(QWidget):
             b.clicked.connect(act)
             bar.addWidget(b)
         self.bar.hide()
+        loose(self.bar_label, self.status)
 
         middle = QWidget()
         mbox = QVBoxLayout(middle)

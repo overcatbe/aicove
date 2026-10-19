@@ -27,7 +27,7 @@ from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, 
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -1464,6 +1464,10 @@ class Window(QMainWindow):
         self.settings_changed()
         self.jobs = set()
         self.tools_label = QLabel()
+        # A long list of running tools is cut at the edge (the tooltip has it all) instead of
+        # making the window wider than the screen.
+        self.tools_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.tools_label.setMinimumWidth(1)
         self.keyboard_buttons = {}
         self.keyboard_pressed = None
         self.keyboard_job = None
@@ -3020,6 +3024,7 @@ class Window(QMainWindow):
                 start.setEnabled(state == "stopped")
                 stop.setEnabled(state != "stopped")
         self.tools_label.setText("Tools running: " + ", ".join(up) if up else "")
+        self.tools_label.setToolTip(self.tools_label.text())
 
     def in_terminal(self, script, title, folder=None):
         cmd = tools.terminal_command(script, folder)
