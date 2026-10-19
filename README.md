@@ -113,7 +113,7 @@ active one. Empty = no buttons.
 |---|---|
 | Settings of this machine | `~/.config/aicove/config.toml` |
 | Launchers | `~/.config/aicove/launchers/<name>.txt` |
-| Personas, their chats, knowledge and notes; documents; work (yours: copy it to move) | `~/AIcove/` (the folder is a setting) |
+| Personas, their chats, knowledge and notes; agents and their reports; writing projects; documents; work (yours: copy it to move) | `~/AIcove/` (the folder is a setting) |
 | Tools | `~/.config/aicove/tools/<name>.txt` |
 | Passwords | `~/.password-store/` (the folder is a setting) |
 | Logs, pid files, download jobs, old versions of saved launchers and tools | `~/.cache/aicove/` |

@@ -192,6 +192,10 @@ whose first `# ` line is its title. The top row has the project, the **Project**
 project…, Import…, Export…, Rename…, Delete project…, Open folder, Keep versions), **Story
 memory…** and **Copy for AO3**.
 
+Models only work when you ask: Send, a template, Review, Remember or a build of the story
+memory. Each such job reads the chapter as it is in the editor at that moment, does its work,
+and stops. While you write, nothing runs.
+
 - **Import…**: paste text, or **From file…**: HTML (an AO3 download or a saved page keeps the
   italics best), PDF (needs `pdftotext`; check the paragraphs), Markdown or plain text. It is
   split at chapter headings (`Chapter 3: Title`, `Prologue`, `Part Two`, `XII`), at `#`
@@ -209,8 +213,8 @@ memory…** and **Copy for AO3**.
   and when you go to another chapter or tab or close the window. A model always reads the text
   as it is in the editor when you ask, saved or not.
 - **New chapter** goes after the selected one; ▲ ▼ move it; **Done** marks it finished for now
-  (later the story memory is built from done chapters); **Delete** moves it to the project's
-  `.trash` folder.
+  (and tells you when its story memory is out of date; it starts nothing); **Remember** reads
+  it into the story memory; **Delete** moves it to the project's `.trash` folder.
 - **Export…**: the whole project as one file: Markdown, plain text, a web page (HTML), PDF,
   an e-book (EPUB) or Word (.docx), each chapter starting on a new page where that exists.
   All chapters, or only those marked done. Needs no extra programs.
@@ -218,12 +222,12 @@ memory…** and **Copy for AO3**.
 - **Keep versions (git)**: each time you leave a chapter you changed (another chapter, another
   tab, closing the window, Ctrl+S) a commit is made in the project's folder, so every earlier
   version can be got back with git. It stays on this machine; nothing is pushed anywhere.
-
 - **The text size**: Ctrl + mouse wheel, or Ctrl+= and Ctrl+-, in the editor. It is remembered.
 
 **Talking about the text** (the panel on the right): pick a persona (it is remembered per
 project) and press **Load** if its model isn't running. Make one of your own for this on the
-Personas tab, with the prompt that suits how you work: an editor, a writing partner, a critic. It reads the open chapter as it stands.
+Personas tab, with the prompt that suits how you work: an editor, a writing partner, a critic.
+It reads the open chapter as it stands.
 
 - **Select text first** to work on just that passage; with nothing selected, questions are
   about the whole chapter and new text goes in at the cursor.
@@ -235,6 +239,8 @@ Personas tab, with the prompt that suits how you work: an editor, a writing part
   replace with your own: **English polish** (`on: passage`: changes text, on the selection or
   passage by passage over the whole chapter, ✎ in the list), **Review** (`on: review`: notes
   only, see below) and **Feedback** (`on: chat`: sent as a message in the talk).
+- **Stop** (in place of Send while it works) ends the answer or the template run there. What
+  came so far is kept; changes already put into the text stay waiting for you.
 - **Think**: lets a thinking model think first. Better sometimes, much slower; templates that
   change text never think.
 - **Put the last answer into the text**: when a model gave a new version without marking it,
@@ -293,20 +299,24 @@ each chapter once and keeps notes, and those go along with everything you ask in
   taste; not with English polish (which only fixes) or the memory reader (which only records).
 - **Plans (yours)**: where the story is going, what must not be forgotten. Only you write it;
   the models read it as plans, not as what happened.
-- What a model gets with every question: your plans, the cast, the threads and the chapter
+- What a model gets with every question: your style and plans, the cast, the threads and the chapter
   notes (only their summaries, or only the chapters near the open one, when the model's context
   is small), next to the open chapter itself.
 
 **The changes**: nothing a model writes is in your chapter until you accept it. Put the cursor
 in a change or right-click it: **✓ Accept**, **✗ Decline**, **✎ Edit…** (change it, then
 take it). The bar above the text has the same, ◀ ▶ to go from one to the next, and **Accept
-all** / **Decline all**. Changes wait across restarts and chapter switches; the chapter list
-shows how many each chapter has. You can type around them as usual.
+all** / **Decline all**; it also says what the change at the cursor is ("“upon” → “on”",
+"space → ¶"). A change of only spaces or line breaks, which can't be seen, marks its whole
+line. Changes wait across restarts and chapter switches; the chapter list shows how many each
+chapter has. You can type around them as usual.
 
 Where it is: `~/AIcove/writing/<project>/`: `project.txt` (title, the chapters in order, draft
 or done, the persona), `chapters/c001.md` …, `bible/` (the story memory: `chapters/` notes,
-`cast.md`, `threads.md`, `style.md`, `plans.md`), `suggestions/` (the changes waiting), `review/` (the
-notes), `talk/` (the talks). The slop list is `~/AIcove/writing/slop.txt`. Files can be edited by hand too; a chapter file put there joins at the end.
+`cast.md`, `threads.md`, `style.md`, `plans.md`), `suggestions/` (the changes waiting),
+`review/` (the notes), `talk/` (the talks). The templates are in `~/AIcove/writing/templates/`,
+the slop list is `~/AIcove/writing/slop.txt`. Files can be edited by hand too; a chapter file
+put there joins at the end.
 
 ## Personas
 
@@ -589,7 +599,7 @@ Everything is a plain text file and can be edited by hand.
 |---|---|
 | Settings of this machine | `~/.config/aicove/config.toml` |
 | Launchers | `~/.config/aicove/launchers/` |
-| Your AIcove folder: personas (each a folder with persona.txt, picture, knowledge, notes), agents and their reports, documents, work | `~/AIcove/` |
+| Your AIcove folder: personas (each a folder with persona.txt, picture, knowledge, notes), agents and their reports, writing projects, documents, work | `~/AIcove/` |
 | Tools | `~/.config/aicove/tools/` |
 | Passwords | `~/.password-store/` |
 | Logs, downloads in progress, old versions of saved launchers and tools | `~/.cache/aicove/` |
