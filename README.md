@@ -63,6 +63,9 @@ complicated software platform.
 - **Voices and pictures** (optional): answers read aloud through a voice server, pictures made
   through an image server (stable-diffusion.cpp's sd-server). See below.
 
+- **Writing**: long texts (a novel, a fic) as projects of chapters: import from pasted text,
+  HTML or PDF, split into chapters, edit, word counts, versions with git, export to Markdown,
+  text, HTML, PDF, EPUB or Word.
 - **Launchers**: one model with its settings (context size, how much goes on the GPU, writing
   style, ...), edited as a form, with an estimate of the memory it needs. Start and stop from the window.
 - **Personas**: a name, picture, system prompt and settings, and the launchers it may run on.

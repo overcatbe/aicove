@@ -36,6 +36,7 @@ from . import launchers as launcher_files
 from .gui_chat import FACE_SIZE, ChatTab, face
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
+from .gui_writing import WritingTab
 from .launchers import find_launchers
 from .settings import BACKUP_DIR, CONFIG_FILE, JOB_DIR, S, cove_cmd
 
@@ -1501,6 +1502,10 @@ class Window(QMainWindow):
         # The chat first: it is what the window is mostly for.
         self.chat_tab = ChatTab(self)
         self.tabs.insertTab(0, self.chat_tab, "Chat")
+        self.writing_tab = WritingTab(self)
+        self.tabs.insertTab(1, self.writing_tab, "Writing")
+        self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is not self.writing_tab
+                                         and self.writing_tab.leave())
         self.tabs.setCurrentIndex(0)
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is self.chat_tab and self.chat_tab.reload())
         if not S.exists:
@@ -3446,6 +3451,8 @@ class Window(QMainWindow):
         elif self.settings_dirty() and not self.resolve_unsaved("Settings", self.save_settings):
             event.ignore()
         elif not self.pw_tab.leaving():
+            event.ignore()
+        elif not self.writing_tab.leave():
             event.ignore()
         else:
             event.accept()

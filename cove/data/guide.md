@@ -134,6 +134,34 @@ picture takes a while. Pictures are kept in the persona's `chats/pictures/`; del
 or the message deletes them. The `pictures` setting names the tool, or the address of an image
 server running elsewhere (anything with the OpenAI image API). Needs a model that can use tools.
 
+## Writing
+
+For long texts: a novel, a fic. A project is a list of chapters, each one a Markdown file
+whose first `# ` line is its title.
+
+- **Import…**: paste text, or **From file…**: HTML (an AO3 download or a saved page keeps the
+  italics best), PDF (needs `pdftotext`; check the paragraphs), Markdown or plain text. It is
+  split at chapter headings (`Chapter 3: Title`, `Prologue`, `Part Two`, `XII`), at `#`
+  lines, at lines that start with a word you type, or not at all. The list on the right shows
+  what it found: untick what isn't a chapter (the title page and tags before the first chapter
+  are unticked already). Into a new project, or after the last chapter of the open one.
+- **The editor**: write or paste. Pasting from a web page or a word processor keeps italics
+  and bold as `*italics*` and `**bold**`. It saves by itself a moment after you stop typing.
+- **New chapter** goes after the selected one; ▲ ▼ move it; **Done** marks it finished for now
+  (later the story memory is built from done chapters); **Delete** moves it to the project's
+  `.trash` folder.
+- **Export…**: the whole project as one file: Markdown, plain text, a web page (HTML), PDF,
+  an e-book (EPUB) or Word (.docx), each chapter starting on a new page where that exists.
+  All chapters, or only those marked done. Needs no extra programs.
+- **Delete project…** moves the whole project to `~/AIcove/writing/.trash`.
+- **Keep versions (git)**: each time you leave a chapter you changed (another chapter, another
+  tab, closing the window, Ctrl+S) a commit is made in the project's folder, so every earlier
+  version can be got back with git. It stays on this machine; nothing is pushed anywhere.
+
+Where it is: `~/AIcove/writing/<project>/`: `project.txt` (title, the chapters in order, draft
+or done), `chapters/c001.md` …. Files can be edited by hand too; a chapter file put there
+joins at the end.
+
 ## Personas
 
 A persona is a name, a picture, a prompt and a few settings, tied to the launchers it runs on.
