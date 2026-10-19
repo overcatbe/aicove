@@ -14,7 +14,7 @@ import time
 from PyQt6.QtCore import QMarginsF, QMimeData, QThread, QTimer, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction, QColor, QDesktopServices, QKeySequence, QPageLayout, QPageSize, QPdfWriter, QShortcut, QTextCharFormat,
-    QTextCursor, QTextDocument,
+    QTextCursor, QTextDocument, QTextFormat,
 )
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -394,11 +394,17 @@ class ChapterEditor(TextBox):
                 c = QTextCursor(self.document())
                 c.setPosition(start)
                 c.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-                sel.cursor = c
-                sel.format.setForeground(colour)
-                sel.format.setFontStrikeOut(strike)
                 back = QColor(colour)
                 back.setAlpha(70 if s is now else 28)
+                if not self.piece((start, end)).strip():
+                    # Only spaces or line breaks: nothing to see, so the whole line is marked.
+                    c.clearSelection()
+                    sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+                    back.setAlpha(90 if s is now else 45)
+                else:
+                    sel.format.setForeground(colour)
+                    sel.format.setFontStrikeOut(strike)
+                sel.cursor = c
                 sel.format.setBackground(back)
                 marks.append(sel)
         self.setExtraSelections(marks)
@@ -2389,7 +2395,10 @@ class WritingTab(QWidget):
             where = ""
             if now is not None:
                 order = sorted(self.editor.items, key=lambda s: s.a.position())
-                where = f" · this is {order.index(now) + 1}"
+                old, new = self.editor.describe(now)
+                shown = lambda t: ("¶" if "\n" in t and not t.strip() else "space" if t and not t.strip()
+                                   else f"“{' '.join(t.split())[:30]}”" if t else "nothing")
+                where = f" · this is {order.index(now) + 1}: {shown(old)} → {shown(new)}"
                 if now.by:
                     where += f", by {now.by}"
             self.bar_label.setText(f"{n} change{'s' if n != 1 else ''} waiting{where}. Right-click one "
