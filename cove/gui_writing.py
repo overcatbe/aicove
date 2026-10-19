@@ -10,6 +10,7 @@ import bisect
 import json
 import os
 import re
+import shutil
 import time
 
 from PyQt6.QtCore import QMarginsF, QMimeData, QThread, QTimer, Qt, QUrl, pyqtSignal
@@ -1945,6 +1946,7 @@ class WritingTab(QWidget):
         self.loading = False
         self.items_dirty = False
         self.notes_dirty = False
+        self.session_notes = {}    # (project, chapter) -> review notes, while the window is open
         self.remembering = None    # the story memory being built
         self.memory_dialog = None
 
@@ -2123,6 +2125,9 @@ class WritingTab(QWidget):
         same = self.project is not None and self.project.id == pid
         try:
             self.project = writing.Project.read(pid) if pid else None
+            if self.project is not None:
+                # Earlier versions kept review notes on disk; they are for one session now.
+                shutil.rmtree(os.path.join(writing.folder(self.project.id), "review"), ignore_errors=True)
             if self.project is not None and self.project.paragraphs != "lines":
                 writing.to_lines(self.project)
                 self.window.say(f"Writing: \"{self.project.title}\" now has one line per paragraph "
@@ -2268,7 +2273,8 @@ class WritingTab(QWidget):
             item.setData(ROLE, file)
             pending = len(self.editor.items) if file == self.file \
                 else len(writing.read_suggestions(self.project, file))
-            notes = sum(1 for x in (self.editor.notes if file == self.file else writing.read_notes(self.project, file))
+            notes = sum(1 for x in (self.editor.notes if file == self.file
+                                    else self.session_notes.get((self.project.id, file), []))
                         if x.get("status", "open") == "open")
             self.label(item, n, text, status, count, pending, self.memory_mark(file, index)
                        + (f" · {notes} note{'s' if notes != 1 else ''}" if notes else ""))
@@ -2308,7 +2314,8 @@ class WritingTab(QWidget):
         self.saved_text = self.project.chapter(file) if file else ""
         self.loading = True
         dropped = self.editor.load(self.saved_text, writing.read_suggestions(self.project, file) if file else [])
-        gone = self.editor.load_notes(writing.read_notes(self.project, file) if file else [], self.saved_text)
+        gone = self.editor.load_notes(self.session_notes.get((self.project.id, file), []) if file else [],
+                                      self.saved_text)
         if gone:
             self.notes_dirty = True
         self.loading = False
@@ -2382,11 +2389,9 @@ class WritingTab(QWidget):
                 self.window.say(f"Writing: the suggestions could not be saved: {e}")
         if self.editor.notes or self.notes_dirty:
             went = self.editor.refresh_notes()
-            try:
-                writing.write_notes(self.project, self.file, self.editor.saved_notes())
-                self.notes_dirty = False
-            except OSError as e:
-                self.window.say(f"Writing: the review notes could not be saved: {e}")
+            # Notes are for this session only: kept while AIcove runs, never written to disk.
+            self.session_notes[(self.project.id, self.file)] = self.editor.saved_notes()
+            self.notes_dirty = False
             if went:
                 self.review.fill()
                 self.relabel()

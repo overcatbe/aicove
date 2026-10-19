@@ -1283,8 +1283,8 @@ def for_prompt(project, open_file, room):
 # counting (slop phrases from a list you keep, gestures, long runs of dialogue, repetition);
 # they are patterns to look at, not errors. A review by a model makes notes by judging; a note
 # may carry a suggested alternative, which only becomes a change in the text when you ask.
-#   writing/<id>/review/c001.json   [{id, at, quote, original, kind, note, suggestion, source,
-#                                     by, time, status}]  status: open, done, dismissed, outdated
+# Notes are {id, at, quote, original, kind, note, suggestion, source, by, time, status} (status:
+# open, done, dismissed, outdated). They last while AIcove is open; nothing of them is stored.
 #   writing/slop.txt                the phrases the checker looks for, one per line
 # A note stays on its passage while you edit; when the passage changes too much it is outdated
 # instead of pointing at the wrong words.

@@ -266,6 +266,8 @@ It reads the open chapter as it stands.
   passage. **Try it** puts its alternative into the text as changes (red and green, to accept or
   decline); **Ask…** takes it into the talk; **Done**, **Dismiss** (not a problem here; a new
   Check doesn't bring it back), **Reopen**.
+- Notes are for the session: they stay while AIcove is open (also when you switch chapters)
+  and are gone when you close it. Run Check or Review again on the text as it is then.
 - Notes stay on their passage while you edit around and in them. When a passage is changed so
   much that the note no longer fits, the note becomes **outdated** and is no longer drawn in the
   text, instead of pointing at the wrong words.
@@ -314,7 +316,7 @@ chapter has. You can type around them as usual.
 Where it is: `~/AIcove/writing/<project>/`: `project.txt` (title, the chapters in order, draft
 or done, the persona), `chapters/c001.md` …, `bible/` (the story memory: `chapters/` notes,
 `cast.md`, `threads.md`, `style.md`, `plans.md`), `suggestions/` (the changes waiting),
-`review/` (the notes), `talk/` (the talks). The templates are in `~/AIcove/writing/templates/`,
+`talk/` (the talks). The templates are in `~/AIcove/writing/templates/`,
 the slop list is `~/AIcove/writing/slop.txt`. Files can be edited by hand too; a chapter file
 put there joins at the end.
 
