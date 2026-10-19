@@ -14,6 +14,7 @@ aicove tools                    the tools of this machine and whether they run
 aicove tools start|stop NAME    one of them
 aicove passwords [sync]         names of the password entries | sync the store
 aicove chat PERSONA [ID|last] ["message"]   chat from a terminal (no message: its chats)
+aicove agent [help]             agents: run, schedule, reports (aicove agent help)
 aicove check                    look at everything the settings point to
 aicove fetch JOB.json           download helper behind "Add model" (resumes)"""
 
@@ -66,6 +67,9 @@ def main(argv=None):
     if cmd == "chat":
         from . import chat
         return chat.main(args)
+    if cmd == "agent":
+        from . import agents
+        return agents.main(args)
     from . import server, settings
     if cmd == "start":
         return start(args)

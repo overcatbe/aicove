@@ -63,6 +63,8 @@ complicated software platform.
 - **Voices and pictures** (optional): answers read aloud through a voice server, pictures made
   through an image server (stable-diffusion.cpp's sd-server). See below.
 
+- **Agents**: a persona with a standing task that runs on its own (now or on a schedule) and
+  comes back with reports, e.g. a story hunter that searches the web for your themes.
 - **Writing**: long texts (a novel, a fic) as projects of chapters: import from pasted text,
   HTML or PDF, split into chapters, edit, word counts, versions with git, export to Markdown,
   text, HTML, PDF, EPUB or Word.

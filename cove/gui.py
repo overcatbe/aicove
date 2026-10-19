@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 from . import fetch, personas, server, settings, tools, voice
 from . import launchers as launcher_files
 from .gui_chat import FACE_SIZE, ChatTab, face
+from .gui_agents import AgentsTab
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
 from .gui_writing import WritingTab
@@ -1502,8 +1503,12 @@ class Window(QMainWindow):
         # The chat first: it is what the window is mostly for.
         self.chat_tab = ChatTab(self)
         self.tabs.insertTab(0, self.chat_tab, "Chat")
+        self.agents_tab = AgentsTab(self)
+        self.tabs.insertTab(1, self.agents_tab, "Agents")
+        self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is self.agents_tab
+                                         and not self.agents_tab.dirty() and self.agents_tab.reload())
         self.writing_tab = WritingTab(self)
-        self.tabs.insertTab(1, self.writing_tab, "Writing")
+        self.tabs.insertTab(2, self.writing_tab, "Writing")
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is not self.writing_tab
                                          and self.writing_tab.leave())
         self.tabs.setCurrentIndex(0)

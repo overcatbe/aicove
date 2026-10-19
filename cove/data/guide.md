@@ -134,6 +134,57 @@ picture takes a while. Pictures are kept in the persona's `chats/pictures/`; del
 or the message deletes them. The `pictures` setting names the tool, or the address of an image
 server running elsewhere (anything with the OpenAI image API). Needs a model that can use tools.
 
+## Agents
+
+An agent is a persona with a standing task that works on its own and comes back with
+reports. The first one is a story hunter: it searches the web for stories on your themes and
+writes each one up as a small article with its sources and the facts to check.
+
+**Reports** shows what the agents brought, newest first; new ones in bold. Filter by
+status, theme and agent. A report has a title, a teaser, the article, its sources (only pages
+the agent really read in that run) and a list of facts to check, each with the number of its
+source.
+
+- **Work on it…** starts a new chat with a persona you pick (the theme's persona if it has
+  one, else Writing Buddy), Web on, with the report typed into the input: add what you want
+  and send.
+- **Keep** / **Used** / **Dismiss**: Dismiss takes it off the list (the file stays). Kept,
+  used and dismissed stories go into the agent's next runs as your taste, more or less like
+  them; nothing it reported before is reported again.
+
+**Agents** is where you set one up:
+
+- **Persona**: whose voice and facts it has. **Models**: the ticked launchers, in order. A
+  run uses the loaded model if it is one of them; with nothing loaded it starts the first one
+  this machine has and stops it again afterwards. When another model is loaded (you are
+  chatting) a scheduled run waits and tries again at the next check; **Run now** asks whether
+  to stop the other model.
+- **Schedule**: `manual`, `every 6h`, `daily 07:00, 19:00`, `weekdays 07:00`,
+  `mon wed fri 08:30`. It only runs when **Run on schedule on this machine** is ticked: that
+  puts one line in your crontab which runs `aicove agent due` every 10 minutes. A run missed
+  while the machine was off is made up once.
+- **Style** (Factual is good for reports), **Thinking**, **Limits**: searches, pages read,
+  tool calls, minutes and stories per run.
+- **Search from**: where its searches and page reads go out from. Normally the machine it runs
+  on; or another machine of yours that ssh knows (a `Host` in `~/.ssh/config`) and that has a
+  SearXNG as a user service on 127.0.0.1:8081. Then sites see that machine's address, not yours.
+  Its SearXNG is started for the run if it isn't running, and stopped again afterwards.
+- **Themes**, one per line: `Name | what it means to you | persona to work on it with`.
+- **Task**: what it should do, in words.
+
+An agent may search the web and read pages, and save its reports in its own folder. Nothing
+else: no files of yours, no commands. Runs go on when the window is closed; **Stop** ends one.
+The last run's log is under the form. Small models are weak at long chains of searching and
+reading; give them a short, clear task and a few themes.
+
+**Agents of another machine** (one you have launchers of) show under its name. They run there,
+on its own schedule; editing, Run now and the reports work from here over ssh. Their reports
+are fetched when the window opens and on **Update from other machines**.
+
+Where they are: `~/AIcove/agents/<id>/`: `agent.txt` (the settings, by hand works too),
+`stories/` (one Markdown file per report), `seen.txt` (links already reported), `runs/` (a log
+per run).
+
 ## Writing
 
 For long texts: a novel, a fic. A project is a list of chapters, each one a Markdown file
@@ -425,6 +476,8 @@ The window does all of this; these are the same actions as commands.
 | `aicove list` | launchers and personas |
 | `aicove info` | this machine's launchers as JSON (what another machine asks for) |
 | `aicove chat PERSONA` | that persona's chats |
+| `aicove agent` | the agents and how they last ran |
+| `aicove agent run ID` | run one now (`aicove agent help` for the rest) |
 | `aicove chat PERSONA "message"` | a new chat (loads the persona's model when needed) |
 | `aicove chat PERSONA last "message"` | go on with its latest chat (or give a chat's id) |
 | `aicove tools` | the tools and whether they run |
@@ -441,7 +494,7 @@ Everything is a plain text file and can be edited by hand.
 |---|---|
 | Settings of this machine | `~/.config/aicove/config.toml` |
 | Launchers | `~/.config/aicove/launchers/` |
-| Your AIcove folder: personas (each a folder with persona.txt, picture, knowledge, notes), documents, work | `~/AIcove/` |
+| Your AIcove folder: personas (each a folder with persona.txt, picture, knowledge, notes), agents and their reports, documents, work | `~/AIcove/` |
 | Tools | `~/.config/aicove/tools/` |
 | Passwords | `~/.password-store/` |
 | Logs, downloads in progress, old versions of saved launchers and tools | `~/.cache/aicove/` |
