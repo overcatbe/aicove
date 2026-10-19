@@ -63,6 +63,14 @@ complicated software platform.
 - **Voices and pictures** (optional): answers read aloud through a voice server, pictures made
   through an image server (stable-diffusion.cpp's sd-server). See below.
 
+- **Agents**: a persona with a standing task that runs on its own (now or on a schedule) and
+  comes back with reports, e.g. a story hunter that searches the web for your themes.
+- **Writing**: long texts (a novel, a fic) as projects of chapters. Import from pasted text,
+  HTML or PDF; one line per paragraph; talk with a persona about the open chapter, its changes
+  come into the text in red and green to accept or decline; a Review mode that only writes notes
+  (a checker for slop phrases, gestures, dialogue runs and repetition, and a review by the
+  persona); a story memory (chapter notes, cast, threads, your style and plans) that goes along
+  with every question; export to Markdown, text, HTML, PDF, EPUB or Word, and Copy for AO3.
 - **Launchers**: one model with its settings (context size, how much goes on the GPU, writing
   style, ...), edited as a form, with an estimate of the memory it needs. Start and stop from the window.
 - **Personas**: a name, picture, system prompt and settings, and the launchers it may run on.
@@ -105,7 +113,7 @@ active one. Empty = no buttons.
 |---|---|
 | Settings of this machine | `~/.config/aicove/config.toml` |
 | Launchers | `~/.config/aicove/launchers/<name>.txt` |
-| Personas, their chats, knowledge and notes; documents; work (yours: copy it to move) | `~/AIcove/` (the folder is a setting) |
+| Personas, their chats, knowledge and notes; agents and their reports; writing projects; documents; work (yours: copy it to move) | `~/AIcove/` (the folder is a setting) |
 | Tools | `~/.config/aicove/tools/<name>.txt` |
 | Passwords | `~/.password-store/` (the folder is a setting) |
 | Logs, pid files, download jobs, old versions of saved launchers and tools | `~/.cache/aicove/` |

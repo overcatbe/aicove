@@ -9,10 +9,12 @@ aicove stop                     stop the model
 aicove stop all                 stop the model and the tools marked for it
 aicove status                   what is running
 aicove list                     launchers and personas
+aicove info                     this machine's launchers as JSON (what another machine asks)
 aicove tools                    the tools of this machine and whether they run
 aicove tools start|stop NAME    one of them
 aicove passwords [sync]         names of the password entries | sync the store
 aicove chat PERSONA [ID|last] ["message"]   chat from a terminal (no message: its chats)
+aicove agent [help]             agents: run, schedule, reports (aicove agent help)
 aicove check                    look at everything the settings point to
 aicove fetch JOB.json           download helper behind "Add model" (resumes)"""
 
@@ -65,6 +67,9 @@ def main(argv=None):
     if cmd == "chat":
         from . import chat
         return chat.main(args)
+    if cmd == "agent":
+        from . import agents
+        return agents.main(args)
     from . import server, settings
     if cmd == "start":
         return start(args)
@@ -76,6 +81,11 @@ def main(argv=None):
         return 0
     if cmd == "list" and not args:
         return show_list()
+    if cmd == "info" and not args:
+        import json
+        from . import launchers
+        print(json.dumps(launchers.info()))
+        return 0
     if cmd == "passwords":
         from . import passwords
         return passwords.main(args)

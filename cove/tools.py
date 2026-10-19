@@ -254,7 +254,8 @@ def start(tool, say=print):
             stop(other, say)
     if tool.not_with_model and tool.state() not in ("running", "starting"):
         from . import server
-        if server.llama_pid() is not None:
+        # A model of another machine takes no memory here.
+        if server.llama_pid() is not None and not server.remote_host():
             server.llama_stop(say)
     if not tool.kept():
         return subprocess.call(["sh", "-c", tool.start], stdin=keyboard(), cwd=tool.cwd())

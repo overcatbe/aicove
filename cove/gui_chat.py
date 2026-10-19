@@ -2,21 +2,22 @@
 # the model it runs on is started here when another one is loaded.
 
 import html
+import json
 import os
 import re
 import threading
 import time
 
 import markdown
-from PyQt6.QtCore import QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QFileDialog, QMenu, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import chat, facts, knowledge, launchers, personas, pictures, summary, voice
+from . import bestof, chat, facts, knowledge, launchers, personas, pictures, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -28,6 +29,95 @@ ROLE = Qt.ItemDataRole.UserRole
 
 
 PICTURE_WIDTH = 420   # pictures in the chat, in pixels; a click shows them whole
+YOUR_PICTURE = 320    # your pictures in the chat: the longer side, in pixels
+SEND_SIDE = 1536      # a picture you send is made at most this big (more costs the model time)
+FACE_SIZE = 40        # persona pictures in the persona list, in pixels
+CHAT_FACE_SIZE = 110  # the persona picture at the top right of the chat, in pixels
+
+
+def short(n):
+    """12345 -> 12.3k, for the context meter."""
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+# Personas without a picture get a circle with their first letter, its colour running from that
+# of the name's first letter (top left) to that of its last (bottom right). A letter's colour is
+# its place on the colour wheel: A red, through orange, green and blue, to Z.
+
+
+def letter_colour(c):
+    """The colour of a letter or digit, as #rrggbb."""
+    c = c.lower()
+    if "a" <= c <= "z":
+        place = (ord(c) - ord("a")) / 26
+    elif c.isdigit():
+        place = int(c) / 10
+    else:
+        place = (ord(c) % 26) / 26
+    return QColor.fromHsvF(place, 0.65, 0.80).name()
+
+
+def face(persona):
+    """The file of a persona's round face: its picture, or its letter circle."""
+    picture = personas.picture_path(persona.id)
+    return round_face(picture) if picture else letter_face(persona.name or persona.id)
+
+
+def letter_face(name):
+    letters = [c for c in name if c.isalnum()] or ["?"]
+    letter = letters[0].upper()
+    start, end = letter_colour(letters[0]), letter_colour(letters[-1])
+    out = os.path.join(settings.STATE_DIR, "faces", f"letter3-{start[1:]}-{end[1:]}-{ord(letter)}.png")
+    if not os.path.exists(out):
+        side = 256
+        image = QPixmap(side, side)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        gradient = QLinearGradient(0, 0, side, side)
+        gradient.setColorAt(0, QColor(start))
+        gradient.setColorAt(1, QColor(end))
+        painter.setBrush(gradient)
+        painter.drawEllipse(0, 0, side, side)
+        # An outline font: the desktop's may be a bitmap one (Terminus) that can't get this big.
+        font = QFont()
+        font.setFamilies(["DejaVu Sans", "Noto Sans", "Liberation Sans", "Sans Serif"])
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        font.setStyleStrategy(QFont.StyleStrategy.ForceOutline)
+        font.setPixelSize(int(side * 0.5))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("white"))
+        painter.drawText(image.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+        painter.end()
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        image.save(out, "PNG")
+    return out
+
+
+def round_face(picture):
+    """A round copy of a persona picture, as a PNG in the state folder (the chat view can't round
+    pictures itself). Made again when the picture changes."""
+    stamp = os.stat(picture).st_mtime_ns
+    name = os.path.basename(os.path.dirname(picture)) + f"-{stamp}.png"
+    out = os.path.join(settings.STATE_DIR, "faces", name)
+    if not os.path.exists(out):
+        source = QPixmap(picture)
+        side = min(source.width(), source.height())
+        source = source.copy((source.width() - side) // 2, (source.height() - side) // 2, side, side)
+        face = QPixmap(side, side)
+        face.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(face)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addEllipse(0, 0, side, side)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, source)
+        painter.end()
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        face.save(out, "PNG")
+    return out
 
 
 def to_html(text, dark):
@@ -79,6 +169,27 @@ class Reply(QThread):
             chat.reply(self.persona, self.conversation, self.part.emit, lambda: self.stopping, self.ask)
         except OSError as e:
             self.failed.emit(str(e))
+
+
+class Measure(QThread):
+    """How much of the model's context the next message takes: the persona's prompt, facts,
+    knowledge and tools, the summary and the chat (as summary.py counts it)."""
+    done = pyqtSignal(object, int, int)
+
+    def __init__(self, persona, conversation, n_ctx):
+        super().__init__()
+        self.persona, self.n_ctx = persona, n_ctx
+        # A copy: the chat may change while this runs.
+        c = conversation or chat.Chat(persona.id, "")
+        self.conversation = chat.Chat(c.persona, c.id, c.title, c.created, list(c.messages), c.summary, c.controls)
+
+    def run(self):
+        try:
+            system, tools = chat.setup(self.persona, self.conversation)
+            used, n_ctx = summary.usage(self.conversation, system + json.dumps(tools), self.n_ctx)
+        except (OSError, ValueError, KeyError):
+            used, n_ctx = -1, 0
+        self.done.emit(self.conversation.id, used, n_ctx)
 
 
 class WriteDialog(QDialog):
@@ -290,8 +401,10 @@ class ChatTab(QWidget):
         self.live = None             # {"thinking", "text"} of the answer coming in
         self.live_thinking = False   # the thinking of the answer coming in is shown (stays so for the next)
         self.dirty = False
+        self.problem = None          # why the last answer didn't come, shown under the chat
 
         self.people = QListWidget()
+        self.people.setIconSize(QSize(FACE_SIZE, FACE_SIZE))
         self.people.currentItemChanged.connect(self.on_persona)
         self.chats = QListWidget()
         self.chats.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -340,25 +453,55 @@ class ChatTab(QWidget):
         self.speaking = None    # (message number, thread) while an answer's audio is being made
         self.playing = None     # message number whose audio plays
         self.player = None
+        self.best_btn = QPushButton("Best of…")
+        self.best_btn.setToolTip("The lines of this persona you kept: ★ keep under an answer, or select a bit "
+                                 "and use the right mouse button")
+        self.best_btn.clicked.connect(self.edit_best)
         self.knowledge_btn = QPushButton("Knowledge…")
         self.knowledge_btn.clicked.connect(self.open_knowledge)
+        # The persona's picture, once, at the top right (not with every answer).
+        self.face = QLabel()
+        self.face.setFixedSize(CHAT_FACE_SIZE, CHAT_FACE_SIZE)
+        top = QHBoxLayout()
+        top.addWidget(self.title)
+        top.addStretch(1)
+        top.addWidget(self.state)
+        top.addWidget(self.model)
+        top.addWidget(self.load_btn)
+        under = QHBoxLayout()
+        under.addWidget(self.facts_btn)
+        under.addWidget(self.remember_btn)
+        under.addWidget(self.knowledge_btn)
+        under.addWidget(self.best_btn)
+        under.addStretch(1)
+        rows = QVBoxLayout()
+        rows.addStretch(1)
+        rows.addLayout(top)
+        rows.addLayout(under)
+        rows.addStretch(1)
         head = QHBoxLayout()
-        head.addWidget(self.title)
-        head.addWidget(self.facts_btn)
-        head.addWidget(self.remember_btn)
-        head.addWidget(self.knowledge_btn)
-        head.addStretch(1)
-        head.addWidget(self.state)
-        head.addWidget(self.model)
-        head.addWidget(self.load_btn)
+        head.addLayout(rows, 1)
+        head.addWidget(self.face)
 
         self.view = QTextBrowser()
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self.on_link)
+        self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self.view_menu)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Write here. Enter sends, Shift+Enter makes a new line.")
         self.input.setFixedHeight(96)
         self.input.installEventFilter(self)
+        self.input.viewport().installEventFilter(self)
+        self.attached = None   # (QImage, name) of a picture going with the next message
+        self.attach_label = QLabel()
+        self.attach_label.setTextFormat(Qt.TextFormat.RichText)
+        self.attach_label.linkActivated.connect(lambda _: self.attach(None))
+        self.attach_label.hide()
+        self.picture_btn = QPushButton("Picture…")
+        self.picture_btn.setToolTip("Send a picture with your message, for a model that can see "
+                                    "(one with an eyes file). Dropping or pasting a picture into the box works too.")
+        self.picture_btn.clicked.connect(self.pick_attachment)
         self.send_btn = QPushButton("Send")
         self.send_btn.clicked.connect(self.send)
         self.stop_btn = QPushButton("Stop")
@@ -367,6 +510,7 @@ class ChatTab(QWidget):
         buttons = QVBoxLayout()
         buttons.addWidget(self.send_btn)
         buttons.addWidget(self.stop_btn)
+        buttons.addWidget(self.picture_btn)
         buttons.addStretch(1)
         bottom = QHBoxLayout()
         bottom.addWidget(self.input, 1)
@@ -400,6 +544,14 @@ class ChatTab(QWidget):
             knobs.addSpacing(12)
             self.controls[key] = combo
         knobs.addStretch(1)
+        self.meter = QProgressBar()
+        self.meter.setFixedWidth(230)
+        self.meter.setMaximumHeight(18)
+        self.meter.hide()
+        knobs.addWidget(self.meter)
+        self.measuring = None
+        self.measured_for = None
+        self.contexts = {}   # launcher name -> its context size, once asked
 
         right = QWidget()
         rbox = QVBoxLayout(right)
@@ -407,6 +559,7 @@ class ChatTab(QWidget):
         rbox.addLayout(head)
         rbox.addWidget(self.view, 1)
         rbox.addLayout(knobs)
+        rbox.addWidget(self.attach_label)
         rbox.addLayout(bottom)
 
         split = QSplitter()
@@ -442,9 +595,7 @@ class ChatTab(QWidget):
         for p in sorted(personas.load_all().values(), key=lambda p: p.name.lower()):
             item = QListWidgetItem(p.name)
             item.setData(ROLE, p.id)
-            picture = personas.picture_path(p.id)
-            if picture:
-                item.setIcon(QIcon(QPixmap(picture)))
+            item.setIcon(QIcon(face(p)))
             self.people.addItem(item)
             if p.id == keep or (keep is None and pick is None and loaded and loaded.name in p.models):
                 pick = item
@@ -458,14 +609,24 @@ class ChatTab(QWidget):
         pid = item.data(ROLE)
         if self.persona and self.persona.id == pid:
             self.persona = personas.Persona.read(pid)
+            self.show_face()
             self.fill_models()
             self.show_knowledge()
             return
         self.persona = personas.Persona.read(pid)
         self.title.setText(self.persona.name)
+        self.show_face()
         self.fill_models()
         self.show_knowledge()
         self.fill_chats()
+
+    def show_face(self):
+        ratio = self.devicePixelRatioF()
+        pixmap = QPixmap(face(self.persona)).scaled(
+            int(CHAT_FACE_SIZE * ratio), int(CHAT_FACE_SIZE * ratio),
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pixmap.setDevicePixelRatio(ratio)
+        self.face.setPixmap(pixmap)
 
     def fill_models(self):
         here = {l.name: l for l in launchers.find_launchers() if not l.error}
@@ -473,7 +634,7 @@ class ChatTab(QWidget):
         loaded = chat.loaded_launcher()
         self.model.clear()
         for name in names:
-            self.model.addItem(here[name].friendly or name, name)
+            self.model.addItem(here[name].label(), name)
         if loaded and loaded.name in names:
             self.model.setCurrentIndex(names.index(loaded.name))
         self.show_thinking_control()
@@ -508,6 +669,7 @@ class ChatTab(QWidget):
             self.window.say(f"Can't read that chat: {e}")
             self.chat = None
         self.open_thinking.clear()
+        self.problem = None
         self.show_controls()
         self.paint()
         self.input.setFocus()
@@ -518,6 +680,7 @@ class ChatTab(QWidget):
         self.chats.clearSelection()
         self.chats.setCurrentItem(None)
         self.chat = None
+        self.problem = None
         self.show_controls()
         self.paint()
         self.input.setFocus()
@@ -576,6 +739,11 @@ class ChatTab(QWidget):
         self.controls["pictures"].setToolTip(
             "On: the persona may make pictures in this chat (the image server starts when needed)."
             if tools is not False else "This model can't use tools, so no pictures.")
+        self.picture_btn.setToolTip(
+            "Send a picture with your message. Dropping or pasting a picture into the box works too."
+            + ("" if launcher is None or launcher.sees else
+               f"\n\n{launcher.friendly or launcher.name} can't see pictures (no 👁): AIcove offers "
+               "to load a model that can when you send one."))
         can = launchers.can_think(launcher.model) if launcher else None
         combo = self.controls["thinking"]
         combo.setEnabled(can is not False)
@@ -594,11 +762,54 @@ class ChatTab(QWidget):
         elif loaded is None:
             text = "No model loaded"
         elif loaded.name == wanted:
-            text = "Ready" if self.window.health.state == "ready" else "Loading…"
+            text = ("Ready" if self.window.health.state == "ready" else "Loading…") \
+                + (f" · on {loaded.host} 🖥" if loaded.host else "")
         else:
-            text = f"Loaded: {loaded.friendly or loaded.name}"
+            text = f"Loaded: {loaded.label()}"
         self.state.setText(text)
         self.load_btn.setEnabled(not self.window.busy() and (loaded is None or loaded.name != wanted))
+        self.measure()
+
+    def measure(self, again=False):
+        """Show how full the context is, if the model of this persona is loaded and ready. Measured
+        again when the chat, its length or the model changed, or when asked (again=True)."""
+        loaded = chat.loaded_launcher()
+        if self.persona is None or loaded is None or loaded.name != self.model.currentData() \
+                or self.window.busy() or self.window.health.state != "ready":
+            self.meter.hide()
+            self.measured_for = None
+            return
+        key = (self.persona.id, self.chat.id if self.chat else None,
+               len(self.chat.messages) if self.chat else 0, loaded.name)
+        if self.worker or self.measuring:
+            if again:
+                self.measured_for = None   # the next look (every 2 s) measures
+            return
+        if key == self.measured_for and not again:
+            return
+        self.measured_for = key
+        self.measuring = Measure(self.persona, self.chat, self.contexts.get(loaded.name))
+        self.measuring.done.connect(lambda cid, used, n_ctx, name=loaded.name: self.measured(cid, used, n_ctx, name))
+        self.measuring.start()
+
+    def measured(self, cid, used, n_ctx, name):
+        self.measuring = None
+        if used < 0 or (self.chat.id if self.chat else "") != cid:
+            self.measured_for = None
+            if used < 0:
+                self.meter.hide()
+            return
+        self.contexts[name] = n_ctx
+        share = used / max(n_ctx, 1)
+        self.meter.setRange(0, n_ctx)
+        self.meter.setValue(min(used, n_ctx))
+        self.meter.setFormat(f"Context {short(used)} of {short(n_ctx)} ({share:.0%})")
+        self.meter.setStyleSheet("QProgressBar::chunk { background: #d08a20; }" if share >= summary.TRIGGER else "")
+        self.meter.setToolTip(
+            f"The next message takes about {used:,} of the model's {n_ctx:,} tokens of context: the "
+            f"persona's prompt, its facts and knowledge, and this chat. From {summary.TRIGGER:.0%} on "
+            f"the oldest messages are summarised (\"So far\" above the chat).")
+        self.meter.show()
 
     def load_model(self, then=None):
         name = self.model.currentData()
@@ -628,19 +839,142 @@ class ChatTab(QWidget):
                 and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.send()
             return True
+        # A picture pasted or dropped into the box goes with the message.
+        if obj is self.input and event.type() == event.Type.KeyPress and event.matches(QKeySequence.StandardKey.Paste):
+            if self.attach_from(QApplication.clipboard().mimeData()):
+                return True
+        if obj is self.input.viewport() and event.type() in (event.Type.DragEnter, event.Type.DragMove) \
+                and self.picture_in(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return True
+        if obj is self.input.viewport() and event.type() == event.Type.Drop and self.attach_from(event.mimeData()):
+            event.acceptProposedAction()
+            return True
         return super().eventFilter(obj, event)
+
+    # --- pictures of yours ------------------------------------------------------------
+
+    @staticmethod
+    def picture_in(mime):
+        """(QImage, name) of the picture in pasted or dropped data, or None."""
+        if mime is None:
+            return None
+        for url in mime.urls():
+            if url.isLocalFile():
+                image = QImage(url.toLocalFile())
+                if not image.isNull():
+                    return image, os.path.basename(url.toLocalFile())
+        if mime.hasImage():
+            image = QImage(mime.imageData())
+            if not image.isNull():
+                return image, "pasted picture"
+        return None
+
+    def attach_from(self, mime):
+        found = self.picture_in(mime)
+        if found is not None:
+            self.attach(found)
+        return found is not None
+
+    def pick_attachment(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Picture", os.path.expanduser("~"),
+                                              "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;All files (*)")
+        if not path:
+            return
+        image = QImage(path)
+        if image.isNull():
+            QMessageBox.warning(self, "Picture", f"Can't read {path} as a picture.")
+            return
+        self.attach((image, os.path.basename(path)))
+
+    def attach(self, found):
+        """found = (QImage, name) to go with the next message, or None for none."""
+        self.attached = found
+        if found is None:
+            self.attach_label.hide()
+        else:
+            self.attach_label.setText(f"📎 {html.escape(found[1])} ({found[0].width()}×{found[0].height()}) goes "
+                                      f"with your next message · <a href='remove'>remove</a>")
+            self.attach_label.show()
+        self.input.setFocus()
+
+    def save_attachment(self):
+        """Save the attached picture into the persona's pictures folder; returns its file name."""
+        image = self.attached[0]
+        if max(image.width(), image.height()) > SEND_SIDE:
+            image = image.scaled(SEND_SIDE, SEND_SIDE, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+        where = pictures.folder(self.persona.id)
+        os.makedirs(where, exist_ok=True)
+        ext = ".png" if image.hasAlphaChannel() else ".jpg"
+        base, n = "you-" + time.strftime("%Y%m%d-%H%M%S"), 1
+        name = base + ext
+        while os.path.exists(os.path.join(where, name)):
+            n += 1
+            name = f"{base}-{n}{ext}"
+        if not image.save(os.path.join(where, name), None, 90):
+            raise OSError(f"can't save the picture in {where}")
+        return name
+
+    def eyes_for_picture(self):
+        """Before a picture is sent: if the chosen model can't see, offer one that can. False =
+        don't send now."""
+        wanted = launchers.get(self.model.currentData() or "")
+        if wanted is not None and wanted.sees:
+            return True
+        here = [l for l in launchers.find_launchers() if not l.error and l.sees and l.present]
+        # Its own models first.
+        here.sort(key=lambda l: (l.name not in self.persona.models, l.friendly.lower()))
+        now = wanted.friendly if wanted else "This model"
+        if not here:
+            return QMessageBox.question(
+                self, "Picture", f"{now} can't see pictures, and no model on this machine can (a launcher "
+                "needs an eyes file, an mmproj). Send the message without the picture being seen?"
+            ) == QMessageBox.StandardButton.Yes
+        box = QMessageBox(self)
+        box.setWindowTitle("Picture")
+        box.setText(f"{now} can't see pictures. Load {here[0].friendly} for this chat?")
+        box.setInformativeText("Load it = the message is sent once it is up (the model loaded now is stopped). "
+                               "Send anyway = the model is told a picture is there, but can't see it.")
+        load = box.addButton(f"Load {here[0].friendly}", QMessageBox.ButtonRole.AcceptRole)
+        anyway = box.addButton("Send anyway", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(load)
+        box.exec()
+        if box.clickedButton() is anyway:
+            return True
+        if box.clickedButton() is not load:
+            return False
+        index = self.model.findData(here[0].name)
+        if index < 0:
+            self.model.addItem(here[0].label(), here[0].name)
+            index = self.model.count() - 1
+        self.model.setCurrentIndex(index)
+        return True
 
     def send(self):
         if self.persona is None or self.worker or self.waiting:
             return
+        self.problem = None
         text = self.input.toPlainText().strip()
-        if not text and not (self.chat and self.chat.messages and self.chat.messages[-1]["role"] == "user"):
+        if not text and not self.attached \
+                and not (self.chat and self.chat.messages and self.chat.messages[-1]["role"] == "user"):
+            return
+        if self.attached and not self.eyes_for_picture():
             return
         if self.chat is None:
             self.chat = chat.Chat.new(self.persona.id)
             self.chat.controls.update(self.new_controls)
-        if text:
-            self.chat.add("user", text)
+        if text or self.attached:
+            extra = {}
+            if self.attached:
+                try:
+                    extra["picture"] = self.save_attachment()
+                except OSError as e:
+                    QMessageBox.warning(self, "Picture", str(e))
+                    return
+                self.attach(None)
+            self.chat.add("user", text, **extra)
             self.chat.save()
             self.input.clear()
             self.fill_chats(self.chat.id)
@@ -655,11 +989,12 @@ class ChatTab(QWidget):
         self.answer()
 
     def answer(self):
+        self.chat.new_version()
         self.live = {"thinking": "", "text": ""}
         self.worker = Reply(self.persona, self.chat)
         self.worker.part.connect(self.on_part)
         self.worker.asking.connect(self.on_ask)
-        self.worker.failed.connect(lambda e: self.window.say(f"No answer: {e}"))
+        self.worker.failed.connect(self.on_failed)
         self.worker.finished.connect(self.answered)
         self.send_btn.hide()
         self.stop_btn.show()
@@ -680,6 +1015,30 @@ class ChatTab(QWidget):
             self.live[kind] += text
         self.dirty = True
 
+    def on_failed(self, error):
+        self.problem = self.why_no_answer(error)
+        self.window.say(f"No answer: {self.problem}")
+
+    def why_no_answer(self, error):
+        """What went wrong, in words: when llama-server died on the way, what its log says."""
+        if server.running() is not None:
+            return error
+        try:
+            with open(server.LLAMA_LOG, errors="replace") as f:
+                tail = f.readlines()[-200:]
+        except OSError:
+            tail = []
+        if any("n_ubatch" in line for line in tail):
+            name = self.model.currentData() or "this model"
+            return (f"llama-server crashed reading the picture: the picture has more tokens than the "
+                    f"model takes in one batch. On the Launchers tab, give {name} a bigger batch "
+                    f"(add -b 4096 -ub 4096 to its options), Save, and send again.")
+        last = next((l.strip() for l in reversed(tail)
+                     if any(w in l for w in ("GGML_ASSERT", "error", "failed", "out of memory"))), "")
+        return ("llama-server stopped while answering (it crashed). "
+                + (f"Its last error: {last}. " if last else "")
+                + f"The whole log: {server.LLAMA_LOG}")
+
     def on_ask(self, title, message):
         worker = self.worker
         if worker is None:
@@ -695,12 +1054,16 @@ class ChatTab(QWidget):
     def answered(self):
         self.worker = None
         self.live = None
+        if self.chat.messages and self.chat.messages[-1]["role"] == "user" and self.chat.messages[-1].get("answers"):
+            self.chat.no_empty_version()
+            self.chat.save()
         self.paint_timer.stop()
         self.stop_btn.hide()
         self.send_btn.show()
         self.fill_chats(self.chat.id)
         self.paint()
         self.input.setFocus()
+        self.measure()
 
     def on_link(self, url):
         what, _, number = url.toString().partition(":")[2].partition("/")
@@ -715,6 +1078,18 @@ class ChatTab(QWidget):
             return
         if what == "summary":
             self.on_summary(number)
+            return
+        if what == "keep" and number.isdigit() and int(number) < len(self.chat.messages):
+            self.keep(self.chat.messages[int(number)]["content"])
+            return
+        if what == "version" and number.isdigit():
+            if self.player is not None:
+                self.player.stop()
+            self.chat.show_version(int(number))
+            self.open_thinking.clear()
+            self.chat.save()
+            self.paint()
+            self.measure(again=True)
             return
         if not number.isdigit():
             return
@@ -734,15 +1109,19 @@ class ChatTab(QWidget):
             message["content"] = dialog.text.toPlainText().strip()
             if dialog.again:
                 del self.chat.messages[i + 1:]
+                message.pop("answers", None)
+                message.pop("shown", None)
             self.chat.save()
             self.paint()
+            self.measure(again=True)
             if dialog.again:
                 self.send()
             return
         elif what == "again":
-            # A new answer to the same question: the whole answer (with its tool steps) goes.
-            start = self.turn_start(i)
-            del self.chat.messages[start:]
+            # A new answer to the same question; this one (with its tool steps) is kept as an
+            # earlier version.
+            self.chat.put_aside()
+            self.open_thinking.clear()
             self.chat.save()
             self.paint()
             self.send()
@@ -756,8 +1135,10 @@ class ChatTab(QWidget):
             self.chat.messages[:] = [m for n, m in enumerate(self.chat.messages)
                                      if n != i and not (m["role"] == "tool" and m.get("tool_call_id") in ids)]
             self.open_thinking.clear()
+            self.chat.no_empty_version()
             self.chat.save()
         self.paint()
+        self.measure(again=True)
 
     def on_summary(self, action):
         """The "So far" box: edit it, or drop it (the next message makes a new one if needed)."""
@@ -779,6 +1160,7 @@ class ChatTab(QWidget):
             self.chat.summary = {}
             self.chat.save()
         self.paint()
+        self.measure(again=True)
 
     # --- knowledge ----------------------------------------------------------------------
 
@@ -807,6 +1189,40 @@ class ChatTab(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(where))
 
     # --- facts --------------------------------------------------------------------------
+
+    # --- best of -----------------------------------------------------------------------
+
+    def keep(self, text):
+        if self.persona is None or not text.strip():
+            return
+        try:
+            bestof.add(self.persona.id, text, self.chat.title if self.chat else "")
+        except OSError as e:
+            QMessageBox.critical(self, "Best of", str(e))
+            return
+        self.window.say(f"Kept in {self.persona.name}'s best of ({bestof.path(self.persona.id)}).")
+
+    def view_menu(self, pos):
+        menu = self.view.createStandardContextMenu(pos)
+        picked = self.view.textCursor().selection().toPlainText().strip()
+        if picked and self.persona is not None:
+            menu.addSeparator()
+            menu.addAction(f"★ Add to {self.persona.name}'s best of", lambda: self.keep(picked))
+        menu.exec(self.view.mapToGlobal(pos))
+
+    def edit_best(self):
+        if self.persona is None:
+            return
+        dialog = EditDialog(self, f"{self.persona.name}'s best of", bestof.read(self.persona.id), False)
+        dialog.text.setPlaceholderText("Nothing kept yet. ★ keep under an answer keeps it whole; to keep "
+                                       "just a line, select it and use the right mouse button.")
+        dialog.resize(760, 560)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            bestof.write(self.persona.id, dialog.text.toPlainText())
+        except OSError as e:
+            QMessageBox.critical(self, "Best of", str(e))
 
     def edit_facts(self):
         if self.persona is None:
@@ -944,11 +1360,9 @@ class ChatTab(QWidget):
         messages = self.chat.messages if self.chat else []
         if not messages and not self.live:
             return f"<p style='color:{dim}'>A new chat with {html.escape(self.persona.name)}.</p>"
-        picture = personas.picture_path(self.persona.id)
-        face = f"<img src='{QUrl.fromLocalFile(picture).toString()}' width='22' height='22'> " if picture else ""
         last = len(messages) - 1
         parts = []
-        name = f"{face}<b>{html.escape(self.persona.name)}</b>"
+        name = f"<b>{html.escape(self.persona.name)}</b>"
         covered, so_far = summary.current(self.chat) if self.chat else (0, "")
         if covered:
             edited = " (edited by you)" if self.chat.summary.get("edited") else ""
@@ -982,8 +1396,16 @@ class ChatTab(QWidget):
             if m["role"] == "user":
                 head = "<b>You</b>"
                 links = [f"<a href='cove:edit/{i}'>edit</a>", f"<a href='cove:delete/{i}'>delete</a>"]
+                seen = ""
+                picture = os.path.join(pictures.folder(self.persona.id), m.get("picture") or "")
+                if m.get("picture") and os.path.exists(picture):
+                    size = QImageReader(picture).size()
+                    scale = min(1.0, YOUR_PICTURE / max(size.width(), size.height(), 1))
+                    url = QUrl.fromLocalFile(picture).toString()
+                    seen = (f"<p><a href='{url}'><img src='{url}' width='{int(size.width() * scale)}' "
+                            f"height='{int(size.height() * scale)}'></a></p>")
                 parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
-                             f"{head}<br>{to_html(m['content'], dark)}"
+                             f"{head}<br>{seen}{to_html(m['content'], dark)}"
                              f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>"
                              "</td></tr></table>")
                 continue
@@ -995,7 +1417,7 @@ class ChatTab(QWidget):
             if m.get("thinking"):
                 words = len(m["thinking"].split())
                 shown = i in self.open_thinking
-                body += (f"<p><a href='cove:think/{i}' style='color:{dim}'>"
+                body += (f"<p style='margin-top:4px'><a href='cove:think/{i}' style='color:{dim}'>"
                          f"{'▾' if shown else '▸'} Thinking ({words} words)</a></p>")
                 if shown:
                     body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
@@ -1022,8 +1444,17 @@ class ChatTab(QWidget):
                         links.insert(0, f"<a href='cove:listen/{i}'>🔊 listen</a>")
                 if i == last:
                     links.append(f"<a href='cove:again/{i}'>answer again</a>")
+                    version, versions = self.chat.versions()
+                    if versions > 1:
+                        back = f"<a href='cove:version/{version - 1}'>◀</a>" if version > 0 else "◀"
+                        on = f"<a href='cove:version/{version + 1}'>▶</a>" if version < versions - 1 else "▶"
+                        links.insert(0, f"{back} {version + 1}/{versions} {on}")
                 links.append(f"<a href='cove:delete/{i}'>delete</a>")
-            head = f"{name}{model}<br>" if first else ""
+                if m["content"]:
+                    links.append(f"<a href='cove:keep/{i}'>★ keep</a>")
+                if m.get("stats"):
+                    links.append(f"{m['stats']['tokens']:,} tokens · {m['stats']['speed']} t/s")
+            head = f"<p style='margin:0'>{name}{model}</p>" if first else ""
             links = f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>" if links else ""
             parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}{links}</td></tr></table>")
         if self.live is not None:
@@ -1035,7 +1466,7 @@ class ChatTab(QWidget):
             if self.live["thinking"]:
                 words = len(self.live["thinking"].split())
                 busy = "Thinking… " if not self.live["text"] else "Thinking "
-                body += (f"<p><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
+                body += (f"<p style='margin-top:4px'><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
                          f"{busy}({words} words)</a></p>")
                 if self.live_thinking:
                     body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
@@ -1045,6 +1476,9 @@ class ChatTab(QWidget):
             if not body:
                 body = f"<p style='color:{dim}'><i>…</i></p>"
             first = not messages or messages[-1]["role"] == "user"
-            parts.append(f"<table width='100%' cellpadding='8'><tr><td>"
-                         f"{name + '<br>' if first else ''}{body}</td></tr></table>")
+            head = f"<p style='margin:0'>{name}</p>" if first else ""
+            parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}</td></tr></table>")
+        if self.problem and self.live is None:
+            parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
+                         f"<b>No answer.</b> {html.escape(self.problem)}</td></tr></table>")
         return "".join(parts)

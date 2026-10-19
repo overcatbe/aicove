@@ -64,7 +64,8 @@ def line_of(m):
     if m["role"] == "assistant" and m.get("tool_calls"):
         calls = "; ".join(f"{c['name']} {c['arguments']}" for c in m["tool_calls"])
         return f"assistant: {m['content']}\n(calls tools: {calls})".strip()
-    return f"{m['role']}: {m['content']}"
+    picture = " (with a picture)" if m.get("picture") and m["role"] == "user" else ""
+    return f"{m['role']}{picture}: {m['content']}"
 
 
 def digest(messages):
@@ -111,6 +112,18 @@ def summarise(summary, transcript):
         # The template ignored the switch: give it room to think and answer.
         request["max_tokens"] = WORDS * 2 + 4000
     raise OSError("the model returned no summary")
+
+
+def usage(chat, fixed, n_ctx=None):
+    """(tokens the next request takes, the model's context): what keep_up measures, also for the
+    meter under the chat. fixed is what goes with every request besides the messages."""
+    covered, text = current(chat)
+    n_ctx = n_ctx or context_size()
+    lines = [line_of(m) for m in chat.messages[covered:]]
+    used = count(fixed + "\n" + text)
+    if lines:
+        used += count("\n".join(lines)) + 8 * len(lines)
+    return used, n_ctx
 
 
 def keep_up(chat, fixed, say=lambda text: None):

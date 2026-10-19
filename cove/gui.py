@@ -22,20 +22,22 @@ import urllib.request
 import zlib
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QProcess, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QObject, QProcess, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import fetch, personas, server, settings, tools, voice
 from . import launchers as launcher_files
-from .gui_chat import ChatTab
+from .gui_chat import FACE_SIZE, ChatTab, face
+from .gui_agents import AgentsTab
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
+from .gui_writing import WritingTab
 from .launchers import find_launchers
 from .settings import BACKUP_DIR, CONFIG_FILE, JOB_DIR, S, cove_cmd
 
@@ -121,8 +123,11 @@ OPTIONS = [
         "For image models. Only works with the model it was made for.",
         aliases=["-mm"]),
     opt("Chat format / thinking", "--reasoning-budget", "int", "Thinking budget",
-        "Thinking models: 0 = skip thinking, 2000 = think max ~2000 tokens, -1 = unlimited.",
-        0, min=-1, max=1000000, step=500),
+        "Thinking models: 0 = skip thinking, 1000 = think max ~1000 tokens, -1 = unlimited.",
+        1000, min=-1, max=1000000, step=100),
+    opt("Chat format / thinking", "--reasoning-budget-message", "text", "When the budget is used up",
+        "Said to the model when its thinking budget runs out, so it moves on to answering cleanly.",
+        "Enough thinking. Answer now."),
     opt("Chat format / thinking", "--chat-template-kwargs", "text", "Template settings",
         "The Qwen way to turn thinking off: {\"enable_thinking\":false}",
         '{"enable_thinking":false}'),
@@ -656,6 +661,39 @@ class Health(threading.Thread):
         while True:
             self.state = server.health()
             time.sleep(2)
+
+
+class Follow(QObject):
+    """Asks the other machines we have launchers of what they have now, so their names,
+    abilities, new and deleted launchers follow here: when the window opens and on "Update from
+    other machines" (Start asks too). A machine that is off is skipped. A plain thread that ends
+    with the window (like Health); news reaches the window as signals."""
+    news = pyqtSignal(str, list, list, bool)
+    done = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.asking = False
+
+    def start(self):
+        if not self.asking:
+            self.asking = True
+            threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        off = []
+        for host in launcher_files.hosts():
+            before = launcher_files.remote_info(host)
+            try:
+                info = server.ask(host)
+                added, removed = launcher_files.follow(host, info)
+            except OSError as e:
+                off.append(str(e))
+                continue
+            if added or removed or launcher_files.remote_info(host) != before:
+                self.news.emit(host, added, removed, True)
+        self.asking = False
+        self.done.emit(off)
 
 
 class NoWheel:
@@ -1286,6 +1324,7 @@ class Window(QMainWindow):
         self.rows = {}
 
         self.list = QListWidget()
+        self.grouped = False
         self.list.currentItemChanged.connect(self.on_select)
         add_btn = QPushButton("Add model…")
         add_btn.setToolTip("From a Hugging Face link, or a model file that is already on this machine")
@@ -1295,6 +1334,14 @@ class Window(QMainWindow):
         persona_btn = QPushButton("New persona on this one…")
         persona_btn.setToolTip("A new persona with its own copy of this launcher's model and settings")
         persona_btn.clicked.connect(self.new_persona_on_launcher)
+        remote_btn = QPushButton("From another machine…")
+        remote_btn.setToolTip("A launcher of another machine with AIcove (reached with ssh): its model runs "
+                              "there, the chat here")
+        remote_btn.clicked.connect(self.add_remote)
+        self.update_btn = QPushButton("Update from other machines")
+        self.update_btn.setToolTip("Ask the other machines what launchers they have now (AIcove also asks "
+                                   "when the window opens and when one of theirs is started)")
+        self.update_btn.clicked.connect(self.update_remote)
         rename_btn = QPushButton("Rename…")
         rename_btn.clicked.connect(self.rename_launcher)
         delete_btn = QPushButton("Delete")
@@ -1310,6 +1357,8 @@ class Window(QMainWindow):
         lbox.addWidget(add_btn)
         lbox.addWidget(new_btn)
         lbox.addWidget(persona_btn)
+        lbox.addWidget(remote_btn)
+        lbox.addWidget(self.update_btn)
         lbox.addLayout(lbuttons)
 
         form = QWidget()
@@ -1359,6 +1408,7 @@ class Window(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(form)
+        self.form_scroll = scroll
 
         mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         self.preview = QPlainTextEdit()
@@ -1400,9 +1450,9 @@ class Window(QMainWindow):
         split.setSizes([230, 900])
         self.tabs = QTabWidget()
         self.launcher_page = split
-        self.tabs.addTab(split, "Launchers")
         self.persona_page = self.persona_tab()
         self.tabs.addTab(self.persona_page, "Personas")
+        self.tabs.addTab(split, "Launchers")
         self.tabs.addTab(self.tools_tab(), "Tools")
         self.pw_tab = PasswordsTab(self)
         self.tabs.addTab(self.pw_tab, "Passwords")
@@ -1414,6 +1464,10 @@ class Window(QMainWindow):
         self.settings_changed()
         self.jobs = set()
         self.tools_label = QLabel()
+        # A long list of running tools is cut at the edge (the tooltip has it all) instead of
+        # making the window wider than the screen.
+        self.tools_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.tools_label.setMinimumWidth(1)
         self.keyboard_buttons = {}
         self.keyboard_pressed = None
         self.keyboard_job = None
@@ -1421,6 +1475,9 @@ class Window(QMainWindow):
         self.build_services()
         self.health = Health()
         self.health.start()
+        self.follow = Follow(self)
+        self.follow.news.connect(self.follow_done)
+        self.follow.done.connect(self.follow_finished)
 
         central = QWidget()
         cbox = QVBoxLayout(central)
@@ -1443,12 +1500,21 @@ class Window(QMainWindow):
         self.proc.errorOccurred.connect(self.proc_done)
 
         self.reload_list()
+        self.follow.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
         # The chat first: it is what the window is mostly for.
         self.chat_tab = ChatTab(self)
         self.tabs.insertTab(0, self.chat_tab, "Chat")
+        self.agents_tab = AgentsTab(self)
+        self.tabs.insertTab(1, self.agents_tab, "Agents")
+        self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is self.agents_tab
+                                         and not self.agents_tab.dirty() and self.agents_tab.reload())
+        self.writing_tab = WritingTab(self)
+        self.tabs.insertTab(2, self.writing_tab, "Writing")
+        self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is not self.writing_tab
+                                         and self.writing_tab.leave())
         self.tabs.setCurrentIndex(0)
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is self.chat_tab and self.chat_tab.reload())
         if not S.exists:
@@ -1515,23 +1581,53 @@ class Window(QMainWindow):
 
     # --- launcher list -------------------------------------------------------
 
+    def launcher_items(self):
+        """(item, launcher) of the list, without the headings of other machines."""
+        items = [self.list.item(i) for i in range(self.list.count())]
+        return [(it, it.data(Qt.ItemDataRole.UserRole)) for it in items
+                if it.data(Qt.ItemDataRole.UserRole) is not None]
+
+    def list_text(self, l):
+        """A launcher in the list: under its machine's heading (when there are other machines),
+        by its name there."""
+        if l.host:
+            return "    " + l.label(l.remote_name, where=False)
+        return ("    " if self.grouped else "") + l.label(l.name)
+
+    def heading(self, text, tip):
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setForeground(QBrush(self.palette().color(self.palette().ColorRole.Text)))
+        item.setToolTip(tip)
+        self.list.addItem(item)
+
     def reload_list(self, select=None):
         self.switching = True
         self.list.clear()
-        for l in find_launchers():
-            item = QListWidgetItem(l.name)
-            item.setData(Qt.ItemDataRole.UserRole, l)
-            if l.error:
-                item.setFlags(Qt.ItemFlag.NoItemFlags)
-                item.setToolTip(l.error)
-            else:
-                item.setToolTip(l.desc)
-            self.list.addItem(item)
+        found = find_launchers()
+        others = sorted({l.host for l in found if l.host})
+        self.grouped = bool(others)
+        # This machine's first, then each other machine's under its name.
+        for host in [""] + others:
+            if host:
+                self.heading(f"🖥 {host}", f"Launchers of {host}: they start there, the chat stays here")
+            elif others:
+                self.heading("This machine", "Launchers whose model runs here")
+            for l in sorted((l for l in found if l.host == host), key=lambda l: l.remote_name or l.name):
+                item = QListWidgetItem(self.list_text(l))
+                item.setData(Qt.ItemDataRole.UserRole, l)
+                if l.error:
+                    item.setFlags(Qt.ItemFlag.NoItemFlags)
+                    item.setToolTip(l.error)
+                else:
+                    item.setToolTip(f"{l.name}: {l.desc}" if l.host else l.desc)
+                self.list.addItem(item)
         self.switching = False
         target = None
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            l = item.data(Qt.ItemDataRole.UserRole)
+        for item, l in self.launcher_items():
             if l.error:
                 continue
             if target is None or l.name == select:
@@ -1565,6 +1661,8 @@ class Window(QMainWindow):
         for flag, row in self.rows.items():
             row.set(opts.get(flag))
         self.extra.setText(shlex.join(extra))
+        # Another machine's launcher is set up there.
+        self.form_scroll.setEnabled(not launcher.host)
         self.loading = False
         self.baseline = self.state()
         self.changed()
@@ -1676,6 +1774,8 @@ class Window(QMainWindow):
     def changed(self, *_):
         if self.loading or self.launcher is None:
             return
+        if self.launcher.host:
+            return self.show_remote()
         model = self.model.currentText().strip()
         size = file_size(model)
         coming = self.download_of(model)
@@ -1699,6 +1799,85 @@ class Window(QMainWindow):
         self.revert_btn.setEnabled(dirty)
         self.save_btn.setEnabled(dirty)
         self.start_btn.setText("Save && Start" if dirty else "Start")
+
+    def show_remote(self):
+        l = self.launcher
+        tools = l.info.get("tools")
+        self.model_info.setText(f"On {l.host}: " + (l.info.get("model") or "not asked yet — Start asks")
+                                + {True: "  ·  can use files", False: "  ·  can't use files"}.get(tools, ""))
+        self.model_info.setToolTip(f"Its settings are {l.remote_name}'s on {l.host}: change them there.")
+        self.model_info.setStyleSheet("")
+        self.mem_info.setText(f"Memory: {l.host}'s, not this machine's.")
+        self.mem_info.setStyleSheet("")
+        self.preview.setPlainText(f"ssh {l.host} aicove start {l.remote_name}\n"
+                                  f"then a tunnel brings it here to port {S.llama_port}")
+        self.setWindowTitle(f"AIcove — {l.name}")
+        self.revert_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self.start_btn.setText("Start")
+
+    def add_remote(self):
+        """New launchers for the launchers of another machine."""
+        if self.dirty() and not self.resolve_unsaved():
+            return
+        known = launcher_files.hosts() or [""]
+        host, ok = QInputDialog.getText(self, "From another machine",
+                                        "The machine, as ssh knows it (a Host in ~/.ssh/config):", text=known[0])
+        host = host.strip()
+        if not ok or not host:
+            return
+        if not launcher_files.NAME.fullmatch(host):
+            QMessageBox.warning(self, "From another machine", "That is not a plain name.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            info = server.ask(host)
+            added, removed = launcher_files.follow(host, info, again=True)
+        except OSError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "From another machine",
+                                f"{e}\n\nThat machine needs AIcove, and this one an ssh key there that works "
+                                f"without a password (try: ssh {host} true).")
+            return
+        QApplication.restoreOverrideCursor()
+        self.followed(host, added, removed)
+        if not added:
+            QMessageBox.information(self, "From another machine", f"Nothing new on {host}: "
+                                    + ("all its launchers are here already." if info["launchers"]
+                                       else "it has no launchers."))
+            return
+        self.launcher = None
+        self.reload_list(select=added[0])
+
+    def followed(self, host, added, removed):
+        """After our launchers of host were made to match it."""
+        if added:
+            self.say(f"From {host}: {', '.join(added)}")
+        if removed:
+            self.say(f"{host} no longer has these, so they went here too (copies in {BACKUP_DIR}): "
+                     + ", ".join(removed))
+
+    def update_remote(self):
+        if not launcher_files.hosts():
+            QMessageBox.information(self, "Update", "No launchers of another machine yet: "
+                                    "add one with \"From another machine…\".")
+            return
+        self.update_btn.setEnabled(False)
+        self.say(f"Asking {', '.join(launcher_files.hosts())}...")
+        self.follow.start()
+
+    def follow_finished(self, off):
+        if not self.update_btn.isEnabled():
+            for line in off:
+                self.say(line)
+            self.say("Up to date." if not off else "The others are up to date.")
+        self.update_btn.setEnabled(True)
+
+    def follow_done(self, host, added, removed, changed):
+        """The watcher asked host again; show what changed (unless the form is being edited)."""
+        self.followed(host, added, removed)
+        if changed and not self.dirty() and not self.busy():
+            self.reload_list(select=self.launcher.name if self.launcher else None)
 
     def resolve_unsaved(self, name=None, save=None):
         """Ask what to do with unsaved changes. False = stay where we are."""
@@ -1754,7 +1933,7 @@ class Window(QMainWindow):
         return True
 
     def new_launcher(self):
-        if self.launcher is None:
+        if self.launcher is None or self.not_here(self.launcher, "New launcher"):
             return
         form = self.checked_form()
         if form is None:
@@ -1775,7 +1954,7 @@ class Window(QMainWindow):
     def add_model(self):
         if self.dirty() and not self.resolve_unsaved():
             return
-        known = [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())]
+        known = [l for _, l in self.launcher_items()]
         dialog = AddModel(self, known, self.budget)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1842,8 +2021,7 @@ class Window(QMainWindow):
     def delete_launcher(self):
         if self.launcher is None:
             return
-        others = [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())]
-        others = [l for l in others if l is not self.launcher and not l.error]
+        others = [l for _, l in self.launcher_items() if l is not self.launcher and not l.error]
         # Files only this launcher uses can go with it; never one that is loaded right now.
         own = [f for f in self.launcher.files() + [self.launcher.model + ".part"]
                if os.path.exists(f) and not any(f in l.files() for l in others)]
@@ -1881,6 +2059,10 @@ class Window(QMainWindow):
             QMessageBox.critical(self, "Delete launcher", str(e))
             return
         self.say(f"Deleted {self.launcher.name} (kept as {dest})")
+        if self.launcher.host:
+            launcher_files.skip_remote(self.launcher)
+            self.say(f"It won't come back from {self.launcher.host} (unless you add {self.launcher.host} again "
+                     "with \"From another machine…\").")
         if drop_files:
             for f in own:
                 try:
@@ -1946,7 +2128,7 @@ class Window(QMainWindow):
     def save_and_start(self):
         if self.launcher is None or self.busy() or not self.save():
             return
-        if not os.path.isfile(self.launcher.model):
+        if not self.launcher.present:
             coming = self.download_of(self.launcher.model)
             QMessageBox.warning(self, "Start", f"The model is still on its way ({coming}):\n{self.launcher.model}"
                                 if coming else f"Model file not found:\n{self.launcher.model}")
@@ -2058,13 +2240,11 @@ class Window(QMainWindow):
         self.ask_keyboard()
         server = running_server()
         active = None
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            l = item.data(Qt.ItemDataRole.UserRole)
+        for item, l in self.launcher_items():
             is_running = server is not None and not l.error and l.model == server[0]
             exact = is_running and launcher_files.run_args(l.args) == server[1]
             coming = None if l.error else self.download_of(l.model)
-            item.setText(("▶ " if is_running else "⇣ " if coming else "") + l.name
+            item.setText(("▶ " if is_running else "⇣ " if coming else "") + self.list_text(l)
                          + (f"  ({coming.split()[-1]})" if coming else ""))
             font = item.font()
             font.setBold(bool(is_running))
@@ -2077,7 +2257,9 @@ class Window(QMainWindow):
         elif active is None:
             self.status.setText(f"{word}: {os.path.basename(server[0])} (port {S.llama_port})")
         elif active[1]:
-            self.status.setText(f"{word}: {active[0].friendly} (port {S.llama_port})")
+            l = active[0]
+            where = f"  —  on {l.host} 🖥" if l.host else f" (port {S.llama_port})"
+            self.status.setText(f"{word}: {l.friendly}{where}")
         else:
             self.status.setText(f"{word}: {os.path.basename(server[0])} with other settings — "
                                 "Start again to apply the saved ones.")
@@ -2090,6 +2272,7 @@ class Window(QMainWindow):
         self.p_baseline = None
         self.p_switching = False
         self.p_list = QListWidget()
+        self.p_list.setIconSize(QSize(FACE_SIZE, FACE_SIZE))
         self.p_list.currentItemChanged.connect(self.on_persona_select)
         new_btn = QPushButton("New…")
         new_btn.clicked.connect(self.new_persona)
@@ -2098,12 +2281,23 @@ class Window(QMainWindow):
         lbuttons = QHBoxLayout()
         lbuttons.addWidget(new_btn)
         lbuttons.addWidget(self.p_delete_btn)
+        self.p_export_btn = QPushButton("Export…")
+        self.p_export_btn.setToolTip("Save this persona as one .zip file: to keep, to move to another "
+                                     "machine, or to give to someone")
+        self.p_export_btn.clicked.connect(self.export_persona)
+        import_btn = QPushButton("Import…")
+        import_btn.setToolTip("Add a persona from a .zip file made with Export…")
+        import_btn.clicked.connect(self.import_persona)
+        lbuttons2 = QHBoxLayout()
+        lbuttons2.addWidget(self.p_export_btn)
+        lbuttons2.addWidget(import_btn)
         left = QWidget()
         lbox = QVBoxLayout(left)
         lbox.setContentsMargins(0, 0, 0, 0)
         lbox.addWidget(QLabel("Personas"))
         lbox.addWidget(self.p_list)
         lbox.addLayout(lbuttons)
+        lbox.addLayout(lbuttons2)
 
         self.p_name = QLineEdit()
         self.p_name.textChanged.connect(self.persona_changed)
@@ -2272,6 +2466,7 @@ class Window(QMainWindow):
             item = QListWidgetItem(p.name or p.id)
             item.setData(Qt.ItemDataRole.UserRole, p)
             item.setToolTip(p.path)
+            item.setIcon(QIcon(face(p)))
             self.p_list.addItem(item)
             if target is None or p.id == select:
                 target = item
@@ -2300,7 +2495,7 @@ class Window(QMainWindow):
         self.p_launcher.addItem("— none: only runs on whatever model is loaded —", "")
         self.p_launchers = {l.name: l for l in find_launchers() if not l.error}
         for l in self.p_launchers.values():
-            self.p_launcher.addItem(f"{l.name}  —  {l.friendly}", l.name)
+            self.p_launcher.addItem(l.label(f"{l.name}  —  {l.friendly}"), l.name)
         wanted = persona.launcher if persona else ""
         if wanted and wanted not in self.p_launchers:
             self.p_launcher.addItem(f"{wanted} (no such launcher)", wanted)
@@ -2358,7 +2553,7 @@ class Window(QMainWindow):
         if launcher is None:
             QMessageBox.warning(self, "Start", f"Pick a model for {self.persona.name} first.")
             return
-        if not os.path.isfile(launcher.model):
+        if not launcher.present:
             coming = self.download_of(launcher.model)
             QMessageBox.warning(self, "Start", f"The model is still on its way ({coming}):\n{launcher.model}"
                                 if coming else f"Model file not found:\n{launcher.model}")
@@ -2371,12 +2566,21 @@ class Window(QMainWindow):
         if launcher is None:
             return
         self.tabs.setCurrentWidget(self.launcher_page)
-        for i in range(self.list.count()):
-            if self.list.item(i).data(Qt.ItemDataRole.UserRole).name == launcher.name:
-                self.list.setCurrentRow(i)
+        for item, l in self.launcher_items():
+            if l.name == launcher.name:
+                self.list.setCurrentItem(item)
+
+    def not_here(self, launcher, title):
+        """True (after saying so) for another machine's launcher, which can't be copied here."""
+        if launcher.host:
+            QMessageBox.information(self, title, f"{launcher.name} is {launcher.remote_name} on {launcher.host}: "
+                                    f"make the copy there, then add it with \"From another machine…\".")
+        return bool(launcher.host)
 
     def own_copy(self, persona, launcher):
         """Give a persona its own copy of a launcher (model + settings); the new launcher's name or None."""
+        if self.not_here(launcher, "Own copy"):
+            return None
         name = persona.id.strip("-._")
         if os.path.exists(launcher_files.path_of(name)):
             name = self.ask_launcher_name(f"{name} is taken — name for {persona.name}'s launcher")
@@ -2419,6 +2623,8 @@ class Window(QMainWindow):
         if self.persona_dirty() and not self.resolve_unsaved(self.persona.name, self.save_persona):
             return
         source = self.launcher
+        if self.not_here(source, "New persona"):
+            return
         name, ok = QInputDialog.getText(self, "New persona", f"Name of the persona that gets {source.name}'s "
                                                              "model and settings:")
         name = name.strip()
@@ -2507,7 +2713,8 @@ class Window(QMainWindow):
             others = [p.name for p in personas.load_all().values()
                       if p.launcher == launcher.name and p.id != self.persona.id]
             self.p_launcher_info.setText(
-                f"{os.path.basename(launcher.model)}  ·  {shlex.join(launcher.args)}"
+                (f"{launcher.remote_name} on {launcher.host}" if launcher.host else
+                 f"{os.path.basename(launcher.model)}  ·  {shlex.join(launcher.args)}")
                 + (f"\nShared with {', '.join(others)} — a change to its settings changes them too."
                    if others else ""))
         # File access needs a model whose chat template knows tools.
@@ -2570,7 +2777,7 @@ class Window(QMainWindow):
         names += [o for o in self.p_others if o not in self.p_launchers and o != launcher.name]
         for name in names:
             l = self.p_launchers.get(name)
-            item = QListWidgetItem(f"{name}  —  {l.friendly}" if l else f"{name} (not on this machine)")
+            item = QListWidgetItem(l.label(f"{name}  —  {l.friendly}") if l else f"{name} (not on this machine)")
             item.setData(Qt.ItemDataRole.UserRole, name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if name in self.p_others else Qt.CheckState.Unchecked)
@@ -2642,6 +2849,68 @@ class Window(QMainWindow):
         self.persona = None
         self.reload_personas(select=persona.id)
         self.p_system.setFocus()
+
+    def export_persona(self):
+        if self.persona is None:
+            return
+        if self.persona_dirty() and not self.resolve_unsaved(self.persona.name, self.save_persona):
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Export {self.persona.name}")
+        box = QVBoxLayout(dialog)
+        note = QLabel("The persona (name, prompt, settings, models it runs on) and its picture always "
+                      "go along. Also:")
+        note.setWordWrap(True)
+        box.addWidget(note)
+        ticks = {}
+        for part, _, label in personas.PARTS:
+            ticks[part] = QCheckBox(label)
+            ticks[part].setChecked(part == "knowledge")
+            box.addWidget(ticks[part])
+        warn = QLabel("Facts and chats are about you: leave them out when you give the persona away.")
+        warn.setWordWrap(True)
+        warn.setEnabled(False)
+        box.addWidget(warn)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Export…")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        box.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export persona",
+                                              os.path.expanduser(f"~/{self.persona.id}.persona.zip"),
+                                              "Persona (*.zip)")
+        if not path:
+            return
+        if not path.endswith(".zip"):
+            path += ".zip"
+        try:
+            n = personas.export(self.persona.id, path, [p for p, t in ticks.items() if t.isChecked()])
+        except OSError as e:
+            QMessageBox.critical(self, "Export persona", str(e))
+            return
+        self.say(f"Exported {self.persona.name} to {path} ({n} files)")
+
+    def import_persona(self):
+        if self.persona_dirty() and not self.resolve_unsaved(self.persona.name, self.save_persona):
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import persona", os.path.expanduser("~"),
+                                              "Persona (*.zip);;All files (*)")
+        if not path:
+            return
+        try:
+            persona = personas.import_(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Import persona", f"Can't import {os.path.basename(path)}: {e}")
+            return
+        here = [m for m in persona.models if launcher_files.get(m) is not None]
+        self.say(f"Imported {persona.name} ({persona.id})" + (
+            "" if here or not persona.models else
+            f". None of its models ({', '.join(persona.models)}) is on this machine: pick one and Save."))
+        self.persona = None
+        self.reload_personas(select=persona.id)
+        self.chat_tab.reload()
 
     def delete_persona(self):
         if self.persona is None:
@@ -2755,6 +3024,7 @@ class Window(QMainWindow):
                 start.setEnabled(state == "stopped")
                 stop.setEnabled(state != "stopped")
         self.tools_label.setText("Tools running: " + ", ".join(up) if up else "")
+        self.tools_label.setToolTip(self.tools_label.text())
 
     def in_terminal(self, script, title, folder=None):
         cmd = tools.terminal_command(script, folder)
@@ -3191,6 +3461,8 @@ class Window(QMainWindow):
         elif self.settings_dirty() and not self.resolve_unsaved("Settings", self.save_settings):
             event.ignore()
         elif not self.pw_tab.leaving():
+            event.ignore()
+        elif not self.writing_tab.leave():
             event.ignore()
         else:
             event.accept()

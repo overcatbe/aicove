@@ -7,6 +7,7 @@
 # each with role, content, time, and for replies the model and the thinking (shown, never sent
 # back to the model).
 
+import base64
 import json
 import os
 import re
@@ -84,9 +85,70 @@ class Chat:
         pictures.tidy(self.persona)
 
     def add(self, role, content, **extra):
+        if role == "user":
+            # Earlier answers can only be switched at the end of the chat; it goes on now.
+            for m in self.messages:
+                m.pop("answers", None)
+                m.pop("shown", None)
         message = {"role": role, "content": content, "time": time.time(), **extra}
         self.messages.append(message)
         return message
+
+    # Earlier answers to the last message of the user's are kept with it: "answers" holds the
+    # other versions (each a list of messages: tool steps and the answer), "shown" says where the
+    # one in the chat stands among all of them.
+
+    def asked(self):
+        """The index of the user's last message, or None."""
+        return next((i for i in range(len(self.messages) - 1, -1, -1) if self.messages[i]["role"] == "user"), None)
+
+    def versions(self):
+        """(which one is shown, how many there are) of the answers to the last question."""
+        u = self.asked()
+        if u is None or not self.messages[u].get("answers") or u == len(self.messages) - 1:
+            return 0, 1
+        question = self.messages[u]
+        return min(question.get("shown", 0), len(question["answers"])), len(question["answers"]) + 1
+
+    def put_aside(self):
+        """Keep the answer to the last question as an earlier version, for a new one to come."""
+        u = self.asked()
+        if u is None or u == len(self.messages) - 1:
+            return
+        question = self.messages[u]
+        others = question.setdefault("answers", [])
+        others.insert(min(question.get("shown", len(others)), len(others)), self.messages[u + 1:])
+        question["shown"] = len(others)
+        del self.messages[u + 1:]
+
+    def new_version(self):
+        """A new answer to the last question is coming: it comes after the earlier ones."""
+        u = self.asked()
+        if u is not None and u == len(self.messages) - 1 and self.messages[u].get("answers"):
+            self.messages[u]["shown"] = len(self.messages[u]["answers"])
+
+    def show_version(self, k):
+        """Show answer k (0 = the first) to the last question instead of the one shown."""
+        u = self.asked()
+        shown, count = self.versions()
+        if u is None or count < 2 or not 0 <= k < count or k == shown:
+            return
+        question = self.messages[u]
+        every = list(question["answers"])
+        every.insert(shown, self.messages[u + 1:])
+        now = every.pop(k)
+        question["answers"], question["shown"] = every, k
+        self.messages[u + 1:] = now
+
+    def no_empty_version(self):
+        """When a new answer came to nothing, show the one before it again."""
+        u = self.asked()
+        if u is not None and u == len(self.messages) - 1 and self.messages[u].get("answers"):
+            question = self.messages[u]
+            self.messages[u + 1:] = question["answers"].pop()
+            question["shown"] = len(question["answers"])
+            if not question["answers"]:
+                del question["answers"], question["shown"]
 
 
 def title_of(text, length=60):
@@ -132,7 +194,7 @@ def launcher_for(persona):
     or None."""
     for name in persona.models:
         launcher = launchers.get(name)
-        if launcher is not None and not launcher.error and os.path.isfile(launcher.model):
+        if launcher is not None and not launcher.error and launcher.present:
             return launcher
     return None
 
@@ -204,9 +266,31 @@ def setup(persona, chat=None):
     return "\n\n".join(p for p in parts if p).strip(), tools
 
 
-def for_model(chat, system):
+# A picture of yours goes along with your message if the model can see; else this note does.
+NO_EYES = "[The user attached a picture here, but you can't see pictures.]"
+PICTURE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
+
+def user_content(chat, m, eyes):
+    """A message of the user's as the model gets it: with its picture if the model has eyes."""
+    if not m.get("picture"):
+        return m["content"]
+    path = os.path.join(pictures.folder(chat.persona), m["picture"])
+    kind = PICTURE_TYPES.get(os.path.splitext(path)[1].lower())
+    if not eyes or not kind or not os.path.isfile(path):
+        return (m["content"] + "\n\n" + NO_EYES).strip()
+    with open(path, "rb") as f:
+        url = f"data:{kind};base64," + base64.b64encode(f.read()).decode()
+    content = [{"type": "image_url", "image_url": {"url": url}}]
+    if m["content"]:
+        content.append({"type": "text", "text": m["content"]})
+    return content
+
+
+def for_model(chat, system, eyes=False):
     """What the model gets: the system prompt, the summary of the older messages if there
-    is one, then the conversation with its tool calls and their results (no thinking)."""
+    is one, then the conversation with its tool calls and their results (no thinking). Pictures
+    of the user's go along when the model has eyes."""
     covered, text = summary.current(chat)
     if covered:
         system = (system + "\n\n" + summary.HEADER + "\n" + text).strip()
@@ -214,7 +298,7 @@ def for_model(chat, system):
     calls = set()
     for m in chat.messages[covered:]:
         if m["role"] == "user":
-            sent.append({"role": "user", "content": m["content"]})
+            sent.append({"role": "user", "content": user_content(chat, m, eyes)})
         elif m["role"] == "assistant" and m.get("tool_calls"):
             sent.append({"role": "assistant", "content": m["content"], "tool_calls": [
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
@@ -227,10 +311,10 @@ def for_model(chat, system):
     return sent
 
 
-def stream(body, on_part, stop=lambda: False):
+def stream(body, on_part, stop=lambda: False, timings=None):
     """Send a request to llama-server and hand every piece of the answer to on_part(kind, text),
     kind being "thinking" or "text". stop() is asked between pieces; when it says yes the answer
-    ends there. Returns (why it ended: "stop", "length", "tool_calls", "stopped" (by us);
+    ends there. timings (a dict) gets llama-server's numbers of the answer, if it sends them. Returns (why it ended: "stop", "length", "tool_calls", "stopped" (by us);
     the tool calls as [{id, name, arguments}]), or raises OSError."""
     req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
@@ -259,8 +343,11 @@ def stream(body, on_part, stop=lambda: False):
                 ended = ended or "stop"
                 break
             try:
-                choice = json.loads(data)["choices"][0]
-            except (ValueError, KeyError, IndexError):
+                piece = json.loads(data)
+                if timings is not None and isinstance(piece.get("timings"), dict):
+                    timings.update(piece["timings"])
+                choice = piece["choices"][0]
+            except (ValueError, KeyError, IndexError, AttributeError):
                 continue
             delta = choice.get("delta") or {}
             if delta.get("reasoning_content"):
@@ -321,11 +408,13 @@ def reply(persona, chat, on_part, stop=lambda: False, ask=None):
             # Never block a chat because summarising failed: it goes on as it is.
             on_part("status", "")
             on_part("note", f"Couldn't summarise the older messages ({e}).")
-        body = request_for(persona, for_model(chat, system), chat.controls, tools)
+        body = request_for(persona, for_model(chat, system, launcher is not None and launcher.sees),
+                           chat.controls, tools)
         if round_ == MAX_ROUNDS:
             # Enough tools: now it has to answer with what it found.
             body.pop("tools", None)
         parts = {"thinking": "", "text": ""}
+        timings = {}
 
         def collect(kind, text):
             parts[kind] += text
@@ -334,12 +423,15 @@ def reply(persona, chat, on_part, stop=lambda: False, ask=None):
         # Whatever came before a stop or an error is kept.
         ended, calls = "broken off", []
         try:
-            ended, calls = stream(body, collect, stop)
+            ended, calls = stream(body, collect, stop, timings)
         finally:
             if parts["text"].strip() or parts["thinking"].strip() or calls or ended != "broken off":
                 message = chat.add("assistant", parts["text"].strip(), model=launcher.name if launcher else "")
                 if parts["thinking"].strip():
                     message["thinking"] = parts["thinking"].strip()
+                if timings.get("predicted_n"):
+                    message["stats"] = {"tokens": int(timings["predicted_n"]),
+                                        "speed": round(float(timings.get("predicted_per_second") or 0), 1)}
                 if calls:
                     message["tool_calls"] = calls
                 elif ended != "stop":

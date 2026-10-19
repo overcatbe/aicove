@@ -130,7 +130,7 @@ def tidy(pid):
             continue
         try:
             with open(os.path.join(chats, name), encoding="utf-8") as f:
-                messages = json.load(f).get("messages", [])
+                messages = personas.chat_messages(json.load(f))
         except (OSError, ValueError):
             return   # better keep too much than delete what a chat we can't read needs
         keep |= {key(profile, for_speech(m["content"])) for m in messages

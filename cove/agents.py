@@ -1,0 +1,879 @@
+# Agents: a persona with a standing task, run on its own (Run now, or on a schedule by cron
+# calling "aicove agent due"), that comes back with reports. An agent lives on the machine that
+# runs it, in the AIcove folder there:
+#   agents/<id>/agent.txt      name:, persona:, models:, schedule:, style:, thinking:, limits:,
+#                              theme: lines, empty line, then the task in words
+#   agents/<id>/stories/*.md   one report per story: title, teaser, article, sources, facts to check
+#   agents/<id>/seen.txt       links already reported, so they don't come again
+#   agents/<id>/runs/*.txt     what each run did; state.json: when it last ran and how it went
+# It may search the web and read pages, nothing else: no files, no commands. Its sources are
+# only pages it really read in that run (small models make up addresses). Kept, used and
+# dismissed stories go back into its next hunts as the user's taste.
+
+import contextlib
+import datetime
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import urllib.parse
+
+from . import chat, facts, launchers, personas, server, web
+from .settings import COVE_DIR, MAIN, S
+
+AGENT_DIR = os.path.join(COVE_DIR, "agents")
+AGENT_FILE = "agent.txt"
+SAFE_ID = personas.SAFE_ID
+STATUSES = ["new", "kept", "used", "dismissed"]
+LIMITS = {"searches": 15, "pages": 12, "steps": 40, "minutes": 20, "stories": 3}
+LIMIT_WORDS = {"searches": "web searches", "pages": "pages read", "steps": "tool calls in all",
+               "minutes": "minutes", "stories": "stories per run"}
+# Of the pages read, the last few stay whole in what the model gets; older ones are cut short.
+WHOLE_PAGES = 3
+CUT_PAGE = 1500
+# What "aicove agent due" is called by: every 10 minutes.
+CRON_LINE = f"*/10 * * * * {sys.executable} {MAIN} agent due >/dev/null 2>&1"
+CRON_MARK = " agent due"
+
+
+# Hosts in ~/.ssh/config that are only for git, not machines of yours.
+GIT_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org")
+
+
+def ssh_hosts():
+    """The machines named in ~/.ssh/config (Host lines without wildcards), for "search from"."""
+    found = []
+    try:
+        with open(os.path.expanduser("~/.ssh/config"), encoding="utf-8") as f:
+            for line in f:
+                key, _, value = line.strip().partition(" ")
+                if key.lower() == "host":
+                    found += [h for h in value.split() if launchers.NAME.fullmatch(h) and h not in GIT_HOSTS]
+    except OSError:
+        pass
+    return list(dict.fromkeys(found))
+
+
+def folder(aid):
+    return os.path.join(AGENT_DIR, aid)
+
+
+class Agent:
+    def __init__(self, aid, name="", persona="", task=""):
+        self.id = aid
+        self.name = name or aid
+        self.persona = persona
+        self.models = []
+        self.schedule = "manual"
+        self.style = "Factual"
+        self.thinking = ""
+        self.limits = dict(LIMITS)
+        # [(name, what it means, persona to work on it with or "")]
+        self.themes = []
+        # The ssh host its searches and page reads go out from, or "" for the machine it runs on
+        self.search_from = ""
+        self.task = task
+
+    @property
+    def path(self):
+        return os.path.join(folder(self.id), AGENT_FILE)
+
+    @classmethod
+    def parse(cls, aid, text):
+        a = cls(aid)
+        head, _, task = text.replace("\r\n", "\n").partition("\n\n")
+        for line in head.split("\n"):
+            key, _, value = line.partition(":")
+            key, value = key.strip().lower(), value.strip()
+            if key == "name":
+                a.name = value or aid
+            elif key == "persona" and SAFE_ID.fullmatch(value):
+                a.persona = value
+            elif key == "models":
+                a.models = [m for m in dict.fromkeys(n.strip() for n in value.split(",")) if SAFE_ID.fullmatch(m)]
+            elif key == "schedule":
+                a.schedule = value or "manual"
+            elif key == "style":
+                a.style = value if value in chat.STYLES else ""
+            elif key == "thinking":
+                a.thinking = value if value in ("on", "off") else ""
+            elif key == "limits":
+                for part in value.split(","):
+                    word, _, number = part.strip().partition(" ")
+                    if word in LIMITS and number.strip().isdigit():
+                        a.limits[word] = max(1, int(number))
+            elif key == "search from":
+                a.search_from = value if launchers.NAME.fullmatch(value) else ""
+            elif key == "theme":
+                parts = [p.strip() for p in value.split("|")]
+                if parts[0]:
+                    a.themes.append((parts[0], parts[1] if len(parts) > 1 else "",
+                                     parts[2] if len(parts) > 2 and SAFE_ID.fullmatch(parts[2]) else ""))
+        a.task = task.strip()
+        return a
+
+    @classmethod
+    def read(cls, aid):
+        with open(os.path.join(folder(aid), AGENT_FILE), encoding="utf-8") as f:
+            return cls.parse(aid, f.read())
+
+    def text(self):
+        head = [f"name: {self.name}", f"persona: {self.persona}"]
+        if self.models:
+            head.append(f"models: {', '.join(self.models)}")
+        head.append(f"schedule: {self.schedule or 'manual'}")
+        if self.style:
+            head.append(f"style: {self.style}")
+        if self.thinking:
+            head.append(f"thinking: {self.thinking}")
+        head.append("limits: " + ", ".join(f"{k} {self.limits[k]}" for k in LIMITS))
+        if self.search_from:
+            head.append(f"search from: {self.search_from}")
+        for name, meaning, pid in self.themes:
+            head.append(f"theme: {name} | {meaning}" + (f" | {pid}" if pid else ""))
+        return "\n".join(head) + "\n\n" + self.task.strip() + "\n"
+
+    def write(self):
+        os.makedirs(folder(self.id), exist_ok=True)
+        tmp = self.path + ".new"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(self.text())
+        os.replace(tmp, self.path)
+
+    def work_with(self, theme):
+        """The persona to work on a story of this theme with, or ""."""
+        return next((pid for name, _, pid in self.themes if name == theme and pid), "")
+
+
+def load_all():
+    try:
+        names = sorted(os.listdir(AGENT_DIR))
+    except OSError:
+        return {}
+    found = {}
+    for n in names:
+        if SAFE_ID.fullmatch(n) and os.path.isfile(os.path.join(AGENT_DIR, n, AGENT_FILE)):
+            try:
+                found[n] = Agent.read(n)
+            except OSError:
+                continue
+    return found
+
+
+def new_id(name):
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "agent"
+    aid, n = base, 2
+    while os.path.exists(folder(aid)):
+        aid, n = f"{base}-{n}", n + 1
+    return aid
+
+
+def delete(aid):
+    """Into the agents' trash, stories and all."""
+    trash = os.path.join(AGENT_DIR, ".trash")
+    os.makedirs(trash, exist_ok=True)
+    dest = os.path.join(trash, f"{aid}-{time.strftime('%Y%m%d-%H%M%S')}")
+    os.rename(folder(aid), dest)
+
+
+# --- state: when it ran, whether it runs ------------------------------------------
+
+def state_path(aid):
+    return os.path.join(folder(aid), "state.json")
+
+
+def state(aid):
+    try:
+        with open(state_path(aid), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    pid = data.get("pid")
+    if pid and not alive(pid):
+        # A run that died without saying so (the machine went down, it was killed).
+        data.pop("pid", None)
+        if data.get("result") == "running":
+            data["result"] = "broken off"
+    return data
+
+
+def save_state(aid, **changes):
+    data = state(aid)
+    data.update(changes)
+    for k in [k for k, v in data.items() if v is None]:
+        del data[k]
+    os.makedirs(folder(aid), exist_ok=True)
+    tmp = state_path(aid) + ".new"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, state_path(aid))
+
+
+def alive(pid):
+    cmd = server.cmdline(pid)
+    return any("agent" == c for c in cmd) and any(c.endswith("aicove") for c in cmd)
+
+
+def running(aid):
+    return bool(state(aid).get("pid"))
+
+
+# --- stories ----------------------------------------------------------------------
+
+def stories_dir(aid):
+    return os.path.join(folder(aid), "stories")
+
+
+class Story:
+    def __init__(self, aid, file, meta, body):
+        self.agent = aid
+        self.file = file
+        self.meta = meta
+        self.body = body
+
+    title = property(lambda self: self.meta.get("title", self.file))
+    teaser = property(lambda self: self.meta.get("teaser", ""))
+    theme = property(lambda self: self.meta.get("theme", ""))
+    status = property(lambda self: self.meta.get("status", "new"))
+    found = property(lambda self: self.meta.get("found", ""))
+
+    @property
+    def path(self):
+        return os.path.join(stories_dir(self.agent), self.file)
+
+    @classmethod
+    def parse(cls, aid, file, text):
+        meta, body = {}, text
+        if text.startswith("---\n"):
+            head, _, body = text[4:].partition("\n---\n")
+            for line in head.split("\n"):
+                key, _, value = line.partition(":")
+                if key.strip():
+                    meta[key.strip()] = value.strip()
+        return cls(aid, file, meta, body.strip())
+
+    def text(self):
+        head = "".join(f"{k}: {' '.join(str(v).split())}\n" for k, v in self.meta.items())
+        return f"---\n{head}---\n\n{self.body.strip()}\n"
+
+    def save(self):
+        os.makedirs(stories_dir(self.agent), exist_ok=True)
+        tmp = self.path + ".new"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(self.text())
+        os.replace(tmp, self.path)
+
+    def markdown(self):
+        """The whole report, to read or to hand to a chat."""
+        return f"# {self.title}\n\n*{self.teaser}*\n\n{self.body}\n"
+
+
+def stories(aid):
+    """The agent's stories, newest first."""
+    found = []
+    try:
+        names = os.listdir(stories_dir(aid))
+    except OSError:
+        return []
+    for name in names:
+        if not name.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(stories_dir(aid), name), encoding="utf-8") as f:
+                found.append(Story.parse(aid, name, f.read()))
+        except OSError:
+            continue
+    return sorted(found, key=lambda s: (s.found, s.file), reverse=True)
+
+
+def mark(aid, file, status):
+    if status not in STATUSES or "/" in file or not file.endswith(".md"):
+        raise ValueError(f"can't mark {file} as {status}")
+    with open(os.path.join(stories_dir(aid), file), encoding="utf-8") as f:
+        story = Story.parse(aid, file, f.read())
+    story.meta["status"] = status
+    story.save()
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:50].rstrip("-") or "story"
+
+
+def plain(url):
+    """An address in one spelling for comparing: no fragment, no trailing slash, host in lower case."""
+    p = urllib.parse.urlsplit(url.strip())
+    return urllib.parse.urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/"), p.query, ""))
+
+
+def seen(aid):
+    try:
+        with open(os.path.join(folder(aid), "seen.txt"), encoding="utf-8") as f:
+            return {line.split("\t")[0] for line in f if line.strip()}
+    except OSError:
+        return set()
+
+
+def remember(aid, urls):
+    with open(os.path.join(folder(aid), "seen.txt"), "a", encoding="utf-8") as f:
+        for u in urls:
+            f.write(f"{plain(u)}\t{time.strftime('%Y-%m-%d')}\n")
+
+
+# --- the schedule ---------------------------------------------------------------
+# "manual", "every 6h" (or 30m), "daily 07:00, 19:00", "weekdays 07:00", "weekends 10:00",
+# "mon wed fri 07:00".
+
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def parse_schedule(text):
+    """("manual",) | ("every", seconds) | ("at", {weekday numbers}, [(hour, minute)]); raises ValueError."""
+    t = " ".join(text.lower().replace(",", " ").split())
+    if t in ("", "manual", "never"):
+        return ("manual",)
+    m = re.fullmatch(r"every (\d+) ?(h|m|hours?|minutes?)", t)
+    if m:
+        seconds = int(m.group(1)) * (3600 if m.group(2).startswith("h") else 60)
+        if seconds < 600:
+            raise ValueError("every 10 minutes is the least")
+        return ("every", seconds)
+    words = t.split()
+    days, times = set(), []
+    for w in words:
+        if w == "daily":
+            days |= set(range(7))
+        elif w == "weekdays":
+            days |= set(range(5))
+        elif w == "weekends":
+            days |= {5, 6}
+        elif w[:3] in DAYS and w.isalpha():
+            days.add(DAYS.index(w[:3]))
+        elif re.fullmatch(r"\d{1,2}:\d\d", w) and int(w.split(":")[0]) < 24 and int(w.split(":")[1]) < 60:
+            times.append(tuple(int(x) for x in w.split(":")))
+        else:
+            raise ValueError(f"don't know \"{w}\"")
+    if not days or not times:
+        raise ValueError("needs days (daily, weekdays, weekends, mon tue ...) and times (07:00)")
+    return ("at", days, sorted(set(times)))
+
+
+def last_slot(plan, now):
+    """The last moment the schedule asked for a run, at or before now (a timestamp), or None."""
+    if plan[0] != "at":
+        return None
+    day = datetime.datetime.fromtimestamp(now)
+    for back in range(8):
+        d = (day - datetime.timedelta(days=back)).date()
+        if d.weekday() not in plan[1]:
+            continue
+        for h, m in reversed(plan[2]):
+            t = datetime.datetime(d.year, d.month, d.day, h, m).timestamp()
+            if t <= now:
+                return t
+    return None
+
+
+def is_due(agent, now=None):
+    """Whether the schedule wants a run now. A missed run (machine off) is caught up once."""
+    now = now or time.time()
+    try:
+        plan = parse_schedule(agent.schedule)
+    except ValueError:
+        return False
+    st = state(agent.id)
+    if plan[0] == "manual" or st.get("pid"):
+        return False
+    last = st.get("started", 0)
+    # Since when the schedule counts: a new agent doesn't run for times before it was there.
+    since = max(last, st.get("scheduled_since", 0))
+    if not since:
+        save_state(agent.id, scheduled_since=now)
+        return plan[0] == "every"
+    if plan[0] == "every":
+        return now - last >= plan[1]
+    slot = last_slot(plan, now)
+    return slot is not None and slot > since
+
+
+def describe_schedule(text):
+    try:
+        plan = parse_schedule(text)
+    except ValueError as e:
+        return f"not understood: {e}"
+    if plan[0] == "manual":
+        return "only when you press Run now"
+    if plan[0] == "every":
+        s = plan[1]
+        return f"every {s // 3600} h" if s % 3600 == 0 else f"every {s // 60} min"
+    days = "every day" if plan[1] == set(range(7)) else ", ".join(DAYS[d] for d in sorted(plan[1]))
+    return f"{days} at " + ", ".join(f"{h:02}:{m:02}" for h, m in plan[2])
+
+
+def cron_installed():
+    try:
+        out = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(CRON_MARK in line and not line.lstrip().startswith("#") for line in out.stdout.split("\n"))
+
+
+def set_cron(on):
+    """Put the line that runs "aicove agent due" every 10 minutes into the user's crontab, or
+    take it out. Other lines stay as they are."""
+    out = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+    lines = [l for l in out.stdout.split("\n") if l.strip()] if out.returncode == 0 else []
+    lines = [l for l in lines if CRON_MARK not in l]
+    if on:
+        lines.append(CRON_LINE)
+    done = subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n" if lines else "",
+                          capture_output=True, text=True, timeout=10)
+    if done.returncode != 0:
+        raise OSError(done.stderr.strip() or "crontab didn't take it")
+
+
+# --- a run --------------------------------------------------------------------
+
+SAVE_TOOL = {"type": "function", "function": {
+    "name": "save_story",
+    "description": "Save one story report for the user. Only pages you read with read_web_page count as sources.",
+    "parameters": {"type": "object", "required": ["title", "theme", "teaser", "article", "sources"], "properties": {
+        "title": {"type": "string", "description": "A headline."},
+        "theme": {"type": "string", "description": "Which of the themes it belongs to."},
+        "teaser": {"type": "string", "description": "One or two sentences that make the user want to read it."},
+        "article": {"type": "string", "description": "3 to 6 paragraphs in your own words, only what the sources say. "
+                                                     "Paragraphs separated by an empty line."},
+        "sources": {"type": "array", "items": {"type": "string"},
+                    "description": "The addresses of the pages you read for it, the most important first."},
+        "facts_to_check": {"type": "array", "items": {"type": "string"},
+                           "description": "The claims the article stands on (numbers, names, dates, quotes), "
+                                          "each ending with the number of its source in brackets, e.g. \"... [1]\"."},
+    }}}}
+
+RULES = """[You work alone now, as an agent. Nobody reads along and nobody answers questions: decide yourself.]
+
+Your task:
+{task}
+
+The themes, and what each means to the user:
+{themes}
+
+How to work:
+- Today is {today}. Search with web_search (at most {searches} searches) and read pages with read_web_page \
+(at most {pages} pages). Search theme by theme; add the month and year to get recent news.
+- Save every good story with save_story, at most {stories} this time. Only pages you really read with \
+read_web_page count as sources. Never write an address from memory. A list of results, a front page or an \
+index of articles is not a source: open the article itself.
+- The article: 3 to 6 paragraphs in your own words, only what the sources say, nothing invented. If the \
+sources disagree, say so. A thin source makes a short article: don't fill it up with general talk.
+- Facts to check: the claims the article stands on, each with the number of its source, like "... [1]".
+- When you are done, answer with one short line about the hunt, without a tool call."""
+
+TASTE = """
+Reported before (don't bring these again):
+{before}"""
+
+LIKED = """
+The user kept or used these, so more like them:
+{liked}"""
+
+DISLIKED = """
+The user dismissed these, so less like them:
+{disliked}"""
+
+
+def system_prompt(agent, persona):
+    themes = "\n".join(f"- {n}: {m}" if m else f"- {n}" for n, m, _ in agent.themes) or "- anything the task names"
+    parts = [persona.system.strip() if persona else "", facts.for_prompt(persona.id) if persona else ""]
+    rules = RULES.format(task=agent.task.strip() or "Find stories for the themes.", themes=themes,
+                         today=time.strftime("%A, %d %B %Y"), **agent.limits)
+    known = stories(agent.id)
+    before = [s for s in known][:30]
+    if before:
+        rules += TASTE.format(before="\n".join(f"- {s.title} ({s.found[:10]})" for s in before))
+    liked = [s for s in known if s.status in ("kept", "used")][:15]
+    if liked:
+        rules += LIKED.format(liked="\n".join(f"- {s.title}" for s in liked))
+    disliked = [s for s in known if s.status == "dismissed"][:15]
+    if disliked:
+        rules += DISLIKED.format(disliked="\n".join(f"- {s.title}" for s in disliked))
+    parts.append(rules)
+    return "\n\n".join(p for p in parts if p)
+
+
+class Busy(Exception):
+    """Another model is loaded (someone is chatting): the run waits for later."""
+
+
+def model_for(agent, take, say):
+    """(launcher, whether this run started it). Uses the loaded model when it is one of the
+    agent's; starts one when nothing is loaded, or when take says another may be stopped."""
+    loaded = chat.loaded_launcher()
+    if loaded is not None and loaded.name in agent.models:
+        return loaded, False
+    if (loaded is not None or server.llama_pid()) and not take:
+        what = loaded.name if loaded else "another model"
+        raise Busy(f"{what} is loaded and isn't one of {agent.name}'s models")
+    for name in agent.models:
+        launcher = launchers.get(name)
+        if launcher is None or launcher.error or not launcher.present:
+            continue
+        if server.llama_start(launcher, say) == 0:
+            return launcher, True
+        raise OSError(f"{name} didn't start")
+    raise OSError(f"none of {agent.name}'s models ({', '.join(agent.models) or 'none set'}) is on this machine")
+
+
+def tools_for(left):
+    tools = []
+    if left["searches"] > 0:
+        tools.append(web.TOOLS[0])
+    if left["pages"] > 0:
+        tools.append(web.TOOLS[1])
+    if left["stories"] > 0:
+        tools.append(SAVE_TOOL)
+    return tools
+
+
+def cut_old_pages(messages):
+    """What the model gets: older pages shortened, so a long hunt fits the context."""
+    pages = [i for i, m in enumerate(messages) if m.get("role") == "tool" and m.get("name") == "read_web_page"]
+    out = []
+    for i, m in enumerate(messages):
+        m = {k: v for k, v in m.items() if k != "name"}
+        if i in pages[:-WHOLE_PAGES] and len(m["content"]) > CUT_PAGE:
+            m["content"] = m["content"][:CUT_PAGE] + "\n[... shortened: you read this page earlier]"
+        out.append(m)
+    return out
+
+
+def save_story(agent, a, fetched, saved, say):
+    """Carry out save_story. Returns what the model is told."""
+    title = " ".join(str(a.get("title", "")).split())
+    article = str(a.get("article", "")).strip()
+    if not title or not article:
+        return "Not saved: a story needs a title and an article."
+    sources = a.get("sources") or []
+    if isinstance(sources, str):
+        sources = re.findall(r"https?://\S+", sources)
+    read = {plain(u) for u in fetched}
+    good, bad = [], []
+    for u in sources:
+        u = str(u).strip().strip("<>()[]")
+        (good if plain(u) in read else bad).append(u)
+    good = list(dict.fromkeys(good))
+    if not good:
+        return ("Not saved: none of these sources is a page you read with read_web_page in this hunt. "
+                "Read the pages first, then save the story with their addresses.")
+    before = seen(agent.id)
+    if all(plain(u) in before for u in good):
+        return "Not saved: this was reported before (same sources). Find another story."
+    themes = [n for n, _, _ in agent.themes]
+    theme = " ".join(str(a.get("theme", "")).split())
+    theme = next((n for n in themes if n.lower() == theme.lower()), "") or theme or (themes[0] if themes else "")
+    facts_ = [" ".join(str(f).split()) for f in (a.get("facts_to_check") or []) if str(f).strip()]
+    body = article + "\n\n## Sources\n\n" + "\n".join(f"{n}. <{u}>" for n, u in enumerate(good, 1))
+    if facts_:
+        body += "\n\n## Facts to check\n\n" + "\n".join(f"- [ ] {f}" for f in facts_)
+    stamp = time.strftime("%Y%m%d-%H%M")
+    file = f"{stamp}-{slug(title)}.md"
+    n = 2
+    while os.path.exists(os.path.join(stories_dir(agent.id), file)):
+        file, n = f"{stamp}-{slug(title)}-{n}.md", n + 1
+    Story(agent.id, file, {"title": title, "theme": theme, "teaser": a.get("teaser", ""),
+                           "status": "new", "found": time.strftime("%Y-%m-%d %H:%M"),
+                           "agent": agent.name}, body).save()
+    remember(agent.id, good)
+    saved.append(file)
+    say(f"  saved: {title} [{theme}] ({len(good)} sources" + (f", {len(bad)} unread dropped" if bad else "") + ")")
+    note = f"Saved as \"{title}\"."
+    if bad:
+        note += " Dropped as sources (not read in this hunt): " + ", ".join(bad)
+    return note
+
+
+def run(agent, say=print, take=False):
+    """One hunt. Returns 0 when it ran (with or without stories), 1 when it couldn't, 3 when
+    another model is loaded (try later)."""
+    if running(agent.id):
+        say(f"{agent.name} is running already.")
+        return 1
+    started = time.time()
+    os.makedirs(os.path.join(folder(agent.id), "runs"), exist_ok=True)
+    log_path = os.path.join(folder(agent.id), "runs", time.strftime("%Y%m%d-%H%M%S") + ".txt")
+    log = open(log_path, "w", encoding="utf-8")
+
+    def tell(text):
+        log.write(text + "\n")
+        log.flush()
+        say(text)
+
+    before = state(agent.id)
+    save_state(agent.id, pid=os.getpid(), started=started, result="running", log=os.path.basename(log_path),
+               ended=None, stories=None)
+    ours = False
+    saved = []
+    result = "broken off"
+    try:
+        persona = personas.Persona.read(agent.persona) if agent.persona and \
+            os.path.isfile(os.path.join(personas.folder(agent.persona), personas.PERSONA_FILE)) else None
+        tell(f"{agent.name}, {time.strftime('%Y-%m-%d %H:%M')}" + (f", as {persona.name}" if persona else ""))
+        try:
+            launcher, ours = model_for(agent, take, tell)
+        except Busy as e:
+            tell(f"Not now: {e}. It tries again at the next check.")
+            result = "waiting"
+            return 3
+        if launchers.can_use_tools(launcher.model) is False:
+            raise OSError(f"{launcher.name} can't use tools (its chat template doesn't know them)")
+        tell(f"Model: {launcher.name}")
+        with (web.via(agent.search_from, tell) if agent.search_from else contextlib.nullcontext()):
+            result = hunt(agent, persona or personas.Persona(agent.id, agent.name, ""), launcher, tell, saved, started)
+        return 0
+    except (OSError, ValueError) as e:
+        tell(f"Couldn't run: {e}")
+        result = f"failed: {e}"
+        return 1
+    except KeyboardInterrupt:
+        tell("Stopped.")
+        result = "stopped"
+        return 1
+    finally:
+        if ours:
+            loaded = chat.loaded_launcher()
+            if loaded is not None and loaded.name in agent.models:
+                server.llama_stop(tell)
+        tell(f"Done: {result}")
+        log.close()
+        if result == "waiting":
+            # A run that didn't happen: the schedule asks again next time, and the old log stays.
+            os.remove(log_path)
+            save_state(agent.id, pid=None, started=before.get("started"), log=before.get("log"),
+                       result="waiting", waiting_since=started)
+        else:
+            save_state(agent.id, pid=None, ended=time.time(), result=result, stories=len(saved),
+                       waiting_since=None)
+        tidy_runs(agent.id)
+
+
+def hunt(agent, persona, launcher, tell, saved, started):
+    left = dict(agent.limits)
+    fetched = set()
+    messages = [{"role": "system", "content": system_prompt(agent, persona)},
+                {"role": "user", "content": "Start the hunt now."}]
+    controls = {"style": agent.style, "thinking": agent.thinking}
+    nudged = False
+    while True:
+        out_of_time = time.time() - started > agent.limits["minutes"] * 60
+        tools = [] if out_of_time or left["steps"] <= 0 else tools_for(left)
+        body = chat.request_for(persona, cut_old_pages(messages), controls, tools)
+        text = {"text": "", "thinking": ""}
+        ended, calls = chat.stream(body, lambda kind, part: text.__setitem__(kind, text[kind] + part))
+        if text["thinking"].strip():
+            tell("  (thought " + str(len(text["thinking"].split())) + " words)")
+        if not calls:
+            line = " ".join(text["text"].split())
+            if not saved and not nudged and tools and left["stories"] > 0:
+                nudged = True
+                tell(f"  answered without a story: {line[:200]}")
+                messages.append({"role": "assistant", "content": text["text"]})
+                messages.append({"role": "user", "content": "You haven't saved a story yet. Search and read some "
+                                 "more and save the best finds with save_story. If there really is nothing, say so in one line."})
+                continue
+            tell(f"Its word: {line[:500]}" if line else f"It ended ({ended}).")
+            return f"{len(saved)} stor{'y' if len(saved) == 1 else 'ies'}"
+        messages.append({"role": "assistant", "content": text["text"], "tool_calls": [
+            {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
+            for c in calls]})
+        for c in calls:
+            left["steps"] -= 1
+            try:
+                a = json.loads(c["arguments"] or "{}")
+                if not isinstance(a, dict):
+                    raise ValueError
+            except ValueError:
+                a = None
+            if a is None:
+                result = "The arguments were not valid JSON. Call the tool again with proper arguments."
+            elif c["name"] == "web_search":
+                if left["searches"] <= 0:
+                    result = "No searches left. Read what you found, or save your stories."
+                else:
+                    left["searches"] -= 1
+                    tell(f"  search: {a.get('query', '')}")
+                    result = web.run("web_search", a)
+            elif c["name"] == "read_web_page":
+                if left["pages"] <= 0:
+                    result = "No more pages to read. Save your stories with what you have."
+                else:
+                    left["pages"] -= 1
+                    tell(f"  read: {a.get('url', '')}")
+                    try:
+                        result = web.read_page(str(a.get("url", "")), a.get("part", 1), fetched)
+                    except (OSError, ValueError, TypeError) as e:
+                        result = f"That didn't work: {e}"
+            elif c["name"] == "save_story":
+                if left["stories"] <= 0:
+                    result = "That's enough stories for this time. Finish with one short line."
+                else:
+                    result = save_story(agent, a, fetched, saved, tell)
+                    if result.startswith("Saved"):
+                        left["stories"] -= 1
+                    else:
+                        tell(f"  refused: {result}")
+            else:
+                result = f"There is no tool called {c['name']}."
+            messages.append({"role": "tool", "tool_call_id": c["id"], "content": result, "name": c["name"]})
+        if left["steps"] <= 0:
+            messages.append({"role": "user", "content": "That was the last tool call. Finish with one short line."})
+
+
+def tidy_runs(aid, keep=50):
+    where = os.path.join(folder(aid), "runs")
+    try:
+        names = sorted(n for n in os.listdir(where) if n.endswith(".txt"))
+    except OSError:
+        return
+    for n in names[:-keep]:
+        os.remove(os.path.join(where, n))
+
+
+def last_log(aid):
+    """The text of the newest run, or ""."""
+    where = os.path.join(folder(aid), "runs")
+    try:
+        name = max(n for n in os.listdir(where) if n.endswith(".txt"))
+        with open(os.path.join(where, name), encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except (OSError, ValueError):
+        return ""
+
+
+def detach(aid, take=False):
+    """Start a run on its own (it goes on when the window closes)."""
+    os.makedirs(os.path.join(folder(aid), "runs"), exist_ok=True)
+    with open(os.path.join(folder(aid), "runs", "detached.out"), "w") as out:
+        subprocess.Popen([sys.executable, MAIN, "agent", "run", aid] + (["--take-model"] if take else []),
+                         stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def stop(aid):
+    pid = state(aid).get("pid")
+    if pid:
+        os.kill(pid, signal.SIGINT)
+
+
+# --- what another machine asks ------------------------------------------------------
+
+def export():
+    """Everything about this machine's agents as one JSON-able dict (aicove agent export)."""
+    found = []
+    for a in load_all().values():
+        st = state(a.id)
+        found.append({"id": a.id, "text": a.text(), "state": st, "due": describe_schedule(a.schedule),
+                      "log": last_log(a.id)[-6000:],
+                      "stories": [{"file": s.file, "text": s.text()} for s in stories(a.id)]})
+    return {"agents": found, "cron": cron_installed(),
+            "personas": {p.id: p.name for p in personas.load_all().values()},
+            "launchers": [l.name for l in launchers.find_launchers() if not l.error]}
+
+
+# --- aicove agent ---------------------------------------------------------------------
+
+USAGE = """aicove agent                        this machine's agents and how they last ran
+aicove agent run ID [--take-model]  run one now and wait (--take-model: stop another loaded model)
+aicove agent start ID [--take-model]  run one on its own, in the background
+aicove agent stop ID                stop a run
+aicove agent due                    run the agents whose time has come (cron, every 10 minutes)
+aicove agent stories [ID]           the reports, newest first
+aicove agent mark ID FILE STATUS    new | kept | used | dismissed
+aicove agent write ID               take the agent file from standard input
+aicove agent delete ID              into the agents' trash
+aicove agent export                 everything as JSON (what another machine asks)
+aicove agent schedule on|off        the crontab line that runs "due\""""
+
+
+def main(args):
+    cmd, rest = (args[0], args[1:]) if args else ("list", [])
+    take = "--take-model" in rest
+    rest = [r for r in rest if r != "--take-model"]
+    known = load_all()
+
+    def one():
+        if not rest or rest[0] not in known:
+            print(f"No agent called {rest[0] if rest else '?'}." + (f" There are: {', '.join(known)}" if known else ""))
+            return None
+        return known[rest[0]]
+
+    if cmd == "list" and not rest:
+        if not known:
+            print(f"No agents yet ({AGENT_DIR}).")
+        for a in known.values():
+            st = state(a.id)
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st["started"])) if st.get("started") else "never"
+            print(f"{a.id:24} {describe_schedule(a.schedule):30} last: {when}, {st.get('result', '-')}")
+        print("Schedule: " + ("on (crontab)" if cron_installed() else "off — aicove agent schedule on"))
+        return 0
+    if cmd in ("run", "start") and len(rest) == 1:
+        a = one()
+        if a is None:
+            return 1
+        if cmd == "start":
+            if running(a.id):
+                print(f"{a.name} is running already.")
+                return 1
+            detach(a.id, take)
+            print(f"{a.name} started.")
+            return 0
+        return run(a, take=take)
+    if cmd == "stop" and len(rest) == 1:
+        a = one()
+        if a is None:
+            return 1
+        stop(a.id)
+        return 0
+    if cmd == "due" and not rest:
+        # One at a time: they share the one model.
+        for a in known.values():
+            if is_due(a):
+                run(a)
+        return 0
+    if cmd == "stories" and len(rest) <= 1:
+        for aid in ([rest[0]] if rest else known):
+            for s in stories(aid):
+                print(f"{s.found:16}  {s.status:9} {aid:16} [{s.theme}] {s.title}  ({s.file})")
+        return 0
+    if cmd == "mark" and len(rest) == 3:
+        a = one()
+        if a is None:
+            return 1
+        try:
+            mark(a.id, rest[1], rest[2])
+        except (OSError, ValueError) as e:
+            print(e)
+            return 1
+        return 0
+    if cmd == "write" and len(rest) == 1 and SAFE_ID.fullmatch(rest[0]):
+        Agent.parse(rest[0], sys.stdin.read()).write()
+        return 0
+    if cmd == "delete" and len(rest) == 1:
+        a = one()
+        if a is None:
+            return 1
+        delete(a.id)
+        return 0
+    if cmd == "export" and not rest:
+        print(json.dumps(export(), ensure_ascii=False))
+        return 0
+    if cmd == "schedule" and rest in (["on"], ["off"]):
+        try:
+            set_cron(rest[0] == "on")
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"Can't change the crontab: {e}")
+            return 1
+        print("Schedule " + ("on: aicove agent due runs every 10 minutes." if rest[0] == "on" else "off."))
+        return 0
+    print(USAGE)
+    return 0 if cmd in ("help", "-h", "--help") else 2
