@@ -218,20 +218,19 @@ whose first `# ` line is its title.
 - **The text size**: Ctrl + mouse wheel, or Ctrl+= and Ctrl+-, in the editor. It is remembered.
 
 **Talking about the text** (the panel on the right): pick a persona (it is remembered per
-project) and press **Load** if its model isn't running. It reads the open chapter as it stands.
+project) and press **Load** if its model isn't running. Make one of your own for this on the
+Personas tab, with the prompt that suits how you work: an editor, a writing partner, a critic. It reads the open chapter as it stands.
 
 - **Select text first** to work on just that passage; with nothing selected, questions are
   about the whole chapter and new text goes in at the cursor.
 - **Ask or tell it** in the box (Enter sends). A question gets an answer in the panel. When you
   ask for a change ("fix my English here", "more ominous", "expand this"), the new version comes
   into the chapter as **changes**: old text struck through in red, new text in green.
-- **Templates** do the usual jobs in one click: **English polish**, **Tighten
-  dialogue** (✎: they change text, on the selection or passage by passage over the whole
-  chapter), **Expand the scene**, **Continue from here**, **Review** (notes, see below), **Beta
-  read**. They are text files in
-  `~/AIcove/writing/templates/` (the **…** button opens the folder): change them or add your own,
-  `on: passage` for one that changes text passage by passage, `on: chat` for one that is sent as
-  a message.
+- **Templates** are prompts for jobs you do often, text files in `~/AIcove/writing/templates/`
+  (the **…** button opens the folder). It starts with three, one of each kind, to change or
+  replace with your own: **English polish** (`on: passage`: changes text, on the selection or
+  passage by passage over the whole chapter, ✎ in the list), **Review** (`on: review`: notes
+  only, see below) and **Feedback** (`on: chat`: sent as a message in the talk).
 - **Think**: lets a thinking model think first. Better sometimes, much slower; templates that
   change text never think.
 - **Put the last answer into the text**: when a model gave a new version without marking it,
@@ -283,11 +282,10 @@ each chapter once and keeps notes, and those go along with everything you ask in
 - **Correct it**: open a note or page, fix what is wrong, Save. What you changed is locked (a
   whole chapter note, or the sections of Cast and Threads, one per `## ` heading) and building
   never overwrites it; **Unlock** gives it back to the model.
-- **Style (yours)**: what the writing is going for: genre and tone (a light, funny read for the
-  bus, or a lyrical tragedy), who it is for, pace, how much dialogue and description, the voice,
-  what to avoid, what it should feel like. It goes along with the talk, Review and the
-  templates that rewrite, so the model judges and writes by your aim instead of its own taste;
-  not with English polish (which only fixes) or the memory reader (which only records).
+- **Style (yours)**: what the writing is going for: genre and tone, who it is for, pace, how
+  much dialogue and description, the voice, what to avoid. It goes along with the talk, Review
+  and the templates that rewrite, so the model judges and writes by your aim instead of its own
+  taste; not with English polish (which only fixes) or the memory reader (which only records).
 - **Plans (yours)**: where the story is going, what must not be forgotten. Only you write it;
   the models read it as plans, not as what happened.
 - What a model gets with every question: your plans, the cast, the threads and the chapter

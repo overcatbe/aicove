@@ -1355,13 +1355,7 @@ class MemoryDialog(QDialog):
             self.text.setPlaceholderText(
                 "What the writing is going for. Only you write here; it goes along with the talk, Review and "
                 "rewrites (not English polish), so the model judges by your aim, not its own taste. For example:\n\n"
-                "Genre and tone: a light, funny school adventure with darker turns / a lyrical tragedy…\n"
-                "For whom: an entertaining read on the bus; readers who know the source material\n"
-                "Pace: quick scenes, events can be told briefly; or slow and immersive\n"
-                "Dialogue and description: dialogue-led, banter matters; description only where it does work\n"
-                "Voice: first person, past tense, the narrator's dry humour; British spelling\n"
-                "Avoid: smirks and raised eyebrows, purple prose, over-explaining jokes\n"
-                "Feels like: …")
+                "Genre and tone:\nFor whom:\nPace:\nDialogue and description:\nVoice:\nAvoid:\nFeels like:")
             self.state.setText("Yours: models read this, they never write it.")
             self.unlock_btn.hide()
             self.read_btn.hide()

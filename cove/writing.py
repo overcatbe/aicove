@@ -735,42 +735,16 @@ REMINDER = ("(Only if I asked you to change or write text: give the complete new
 
 PASSAGE_RULES = """Answer with the new version of the passage between <rewrite> and </rewrite> and nothing else: no comments, no explanation, no quotes around it. If nothing needs changing, give the passage back unchanged."""
 
+# The templates a new install starts with: one of each kind, short, to be changed or replaced
+# by your own (they are text files in the templates folder).
 TEMPLATES = {
     "English polish": ("passage", "Factual",
-        "Fix the English of this passage: grammar, spelling, punctuation, word order, wrong prepositions and "
-        "phrasing that sounds non-native. Keep my voice, my word choices where they work, the tense, the "
-        "point of view and every bit of the content, dark, violent, sexual or crude parts included, exactly as "
-        "intense. Change as little as possible: no new sentences, no cuts, no restyling. Leave everything that "
-        "is correct English as it is, even where you would say it differently; repetition, fragments and "
-        "unusual phrasing are often on purpose."),
-    "Tighten dialogue": ("passage", "",
-        "Make the dialogue in this passage sharper and more natural: cut stiff lines and over-explaining "
-        "tags, give each character their own way of speaking. Leave the narration as it is unless a line "
-        "around the dialogue needs adjusting."),
-    "Expand the scene": ("chat", "Creative",
-        "Expand the selected passage: more sensory detail, interiority and beats, so the moment lands. "
-        "About twice as long, in my voice, nothing toned down."),
-    "Continue from here": ("chat", "Story",
-        "Write what comes next from the cursor on, 300 to 500 words, in my voice, picking up exactly where "
-        "the text stops. Keep to what has happened in the chapter so far."),
+        "Fix the grammar, spelling and punctuation of this passage. Keep the author's voice and every bit of "
+        "the content. Change as little as possible."),
     "Review": ("review", "",
-        "Review this chapter as a careful editor. You write notes; you do not rewrite anything.\n"
-        "Look for: AI-sounding prose and clichés; repetition; errors of grammar or word choice; continuity "
-        "errors, inside the chapter and against the story bible; unnatural dialogue; weak pacing (adventures "
-        "dispatched too quickly, transitions that jump); underdeveloped scenes; dialogue stretches where the "
-        "reader loses the picture of where people are and what they are doing.\n"
-        "Dialogue-heavy scenes are not a problem in themselves. Only note one when the dialogue stops carrying "
-        "character, tension, information or humour, or when the reader can no longer see the scene.\n"
-        "Where a dialogue stretch needs grounding, suggest meaningful action, setting or behaviour (someone "
-        "stirring a pot, putting down a book, refusing to answer, changing the subject), never mechanical "
-        "gestures (smirks, sighs, raised eyebrows, nods, glances) or filler dialogue tags.\n"
-        "Preserve the author's voice, humour, sentence structure and intentions. Do not suggest rewriting prose "
-        "that works. Do not expand familiar canon events for their own sake. Where an alternative clearly helps, "
-        "make it precise and minimal; most notes need none.\n"
-        "A chapter may need no notes at all. Five notes that matter are better than twenty that don't."),
-    "Beta read": ("chat", "",
-        "Read the chapter as a sharp, honest beta reader: what works, what drags, where the voice slips, "
-        "what is unclear, continuity problems inside the chapter. Point to the places. No rewrites."),
+        "Review this text as an editor: what could be better, and why. Leave alone what works."),
+    "Feedback": ("chat", "",
+        "Read the chapter and tell me what works and what doesn't."),
 }
 
 
