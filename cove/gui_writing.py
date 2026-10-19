@@ -6,6 +6,7 @@
 # suggestions, old text struck through in red and new text in green, until you accept or
 # decline them.
 
+import bisect
 import json
 import os
 import re
@@ -120,51 +121,96 @@ class ChapterEditor(TextBox):
         self.cursorPositionChanged.connect(self.moved)
 
     # --- positions: Qt counts UTF-16 units, Python characters -----------------------
+    # Worked out once per state of the text (and of the list of changes), not per question:
+    # a chapter with a hundred changes waiting asks a great many.
+
+    def snap(self):
+        key = (self.document().revision(), len(self.items), id(self.items[-1]) if self.items else 0)
+        if getattr(self, "_snap", None) is None or self._snap[0] != key:
+            text = self.document().toPlainText()
+            wide = any(ord(c) > 0xFFFF for c in text)
+            conv = (lambda q: q2p(text, q)) if wide else (lambda q: min(q, len(text)))
+            ranges = sorted((conv(s.new()[0]), conv(s.new()[1])) for s in self.items)
+            ranges = [(a, max(a, b)) for a, b in ranges]
+            starts = [a for a, _ in ranges]
+            before = [0]                       # removed before range i
+            for a, b in ranges:
+                before.append(before[-1] + b - a)
+            fstarts = [a - before[i] for i, (a, _) in enumerate(ranges)]
+            self._snap = (key, text, wide, conv, ranges, starts, before, fstarts)
+        return self._snap
 
     def doc_text(self):
-        return self.document().toPlainText()
+        return self.snap()[1]
 
-    def ranges(self, text):
-        """The new pieces as Python index ranges of text, in order."""
-        return sorted((q2p(text, s.new()[0]), q2p(text, s.new()[1])) for s in self.items)
+    def ranges(self, text=None):
+        """The new pieces as Python index ranges of the document text, in order."""
+        return self.snap()[4]
 
     def file_text(self):
-        text = self.doc_text()
-        for start, end in reversed(self.ranges(text)):
-            text = text[:start] + text[end:]
-        return text
+        _, text, _, _, ranges, _, _, _ = self.snap()
+        if not ranges:
+            return text
+        parts, last = [], 0
+        for a, b in ranges:
+            parts.append(text[last:a])
+            last = b
+        parts.append(text[last:])
+        return "".join(parts)
 
     def to_file(self, pos):
         """A document position as an index in file_text()."""
-        text = self.doc_text()
-        p = q2p(text, pos)
-        removed = sum(min(end, p) - start for start, end in self.ranges(text) if start < p)
+        _, text, _, conv, ranges, starts, before, _ = self.snap()
+        p = conv(pos)
+        i = bisect.bisect_left(starts, p)
+        removed = before[i]
+        if i > 0 and ranges[i - 1][1] > p:
+            # inside the piece before: only the part up to p is gone
+            removed -= ranges[i - 1][1] - p
         return p - removed
 
     def to_doc(self, at):
         """An index in file_text() as a document position, after the new pieces before it."""
-        text = self.doc_text()
-        p = at
-        for start, end in self.ranges(text):
-            if start <= p:
-                p += end - start
-        return p2q(text, p)
+        _, text, wide, _, _, _, before, fstarts = self.snap()
+        p = at + before[bisect.bisect_right(fstarts, at)]
+        return p2q(text, p) if wide else p
 
     def piece(self, r):
-        text = self.doc_text()
-        return text[q2p(text, r[0]):q2p(text, r[1])]
+        _, text, _, conv, _, _, _, _ = self.snap()
+        return text[conv(r[0]):conv(r[1])]
 
     # --- loading and saving ------------------------------------------------------
 
     def load(self, text, found):
-        """The file's text with its suggestions. Returns how many no longer fit the text."""
+        """The file's text with its suggestions, put together in one go. Returns how many no
+        longer fit the text."""
         self.items = []
-        self.setPlainText(text)
-        dropped = 0
+        self._snap = None
+        placed, last_end, dropped = [], -1, 0
         for item in sorted(found, key=lambda i: i["at"]):
-            if not self.add_one(item, text):
+            at = writing.locate(text, item)
+            if at is None or (not item["old"] and not item["new"]) or at < last_end \
+                    or (at == last_end and placed and placed[-1][1]["old"] and not item["old"]):
                 dropped += 1
-        self.document().clearUndoRedoStacks()
+                continue
+            placed.append((at, item))
+            last_end = at + len(item["old"])
+        # The document: the text with each change's new piece right after its old one.
+        parts, spans, last, length = [], [], 0, 0
+        for at, item in placed:
+            parts.append(text[last:at])
+            length += qlen(text[last:at])
+            old_len, new_len = qlen(item["old"]), qlen(item["new"])
+            spans.append((length, old_len, new_len, item))
+            parts.append(item["old"] + item["new"])
+            length += old_len + new_len
+            last = at + len(item["old"])
+        parts.append(text[last:])
+        self.setPlainText("".join(parts))
+        doc = self.document()
+        self.items = [Suggestion(doc, start, old_len, new_len, item.get("by", ""), item.get("time", 0.0))
+                      for start, old_len, new_len, item in spans]
+        doc.clearUndoRedoStacks()
         self.paint()
         self.items_changed.emit()
         return dropped
