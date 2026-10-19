@@ -196,6 +196,12 @@ whose first `# ` line is its title.
   lines, at lines that start with a word you type, or not at all. The list on the right shows
   what it found: untick what isn't a chapter (the title page and tags before the first chapter
   are unticked already). Into a new project, or after the last chapter of the open one.
+- **One line is one paragraph**, as in a word processor: Enter starts the next one, and an
+  empty line is only there when you put it there. (Projects from before, which had an empty
+  line between paragraphs, are taken over once when opened; git keeps the version before.)
+- **Copy for AO3** puts the open chapter, without its title, on the clipboard as HTML: a `<p>`
+  per paragraph, `<em>` for italics, scene breaks centred. Paste it into AO3's HTML box (or its
+  rich text box). Changes still waiting are not in it.
 - **The editor**: write or paste. Pasting from a web page or a word processor keeps italics
   and bold as `*italics*` and `**bold**`. It saves by itself a moment after you stop typing.
 - **New chapter** goes after the selected one; ▲ ▼ move it; **Done** marks it finished for now
@@ -209,9 +215,95 @@ whose first `# ` line is its title.
   tab, closing the window, Ctrl+S) a commit is made in the project's folder, so every earlier
   version can be got back with git. It stays on this machine; nothing is pushed anywhere.
 
+- **The text size**: Ctrl + mouse wheel, or Ctrl+= and Ctrl+-, in the editor. It is remembered.
+
+**Talking about the text** (the panel on the right): pick a persona (it is remembered per
+project) and press **Load** if its model isn't running. It reads the open chapter as it stands.
+
+- **Select text first** to work on just that passage; with nothing selected, questions are
+  about the whole chapter and new text goes in at the cursor.
+- **Ask or tell it** in the box (Enter sends). A question gets an answer in the panel. When you
+  ask for a change ("fix my English here", "more ominous", "expand this"), the new version comes
+  into the chapter as **changes**: old text struck through in red, new text in green.
+- **Templates** do the usual jobs in one click: **English polish**, **Tighten
+  dialogue** (✎: they change text, on the selection or passage by passage over the whole
+  chapter), **Expand the scene**, **Continue from here**, **Review** (notes, see below), **Beta
+  read**. They are text files in
+  `~/AIcove/writing/templates/` (the **…** button opens the folder): change them or add your own,
+  `on: passage` for one that changes text passage by passage, `on: chat` for one that is sent as
+  a message.
+- **Think**: lets a thinking model think first. Better sometimes, much slower; templates that
+  change text never think.
+- **Put the last answer into the text**: when a model gave a new version without marking it,
+  this takes it in as changes anyway.
+- The rules every request carries: the text is yours, dark themes, violence, sex and crude
+  language stay exactly as written; nothing is softened, cut or moralised; your voice, tense and
+  spelling stay. Use an uncensored model for writing like that.
+
+**Review** (the second tab of the right panel): notes on the text, never changes.
+
+- **Check** counts, without a model: phrases from your **Slop list…** (a text file, one phrase
+  per line, `*` for any one word: change it to your taste), many gestures close together
+  (smirks, shrugs, eyebrows…), long runs of dialogue with little around them, the same word
+  three times in a few lines, sentences in a row that start the same way. These are patterns to
+  look at, not errors: a phrase can be right where it is, and a dialogue-heavy scene can be fine.
+- **Review** has the persona read the chapter (or only the selection) as an editor, with the
+  story memory and what Check found, and write notes: the passage, what kind of problem (slop,
+  cliché, repetition, continuity, error, dialogue, pacing, underdeveloped), why, and sometimes a
+  minimal alternative. Its rules are in the **Review** template, not in the persona: in the
+  Talk tab the persona stays your writing partner. A chapter may get no notes at all. A big
+  model judges better; it takes a few minutes per chapter.
+- Notes show as a soft wavy underline in the text and as a list. Click one to go to its
+  passage. **Try it** puts its alternative into the text as changes (red and green, to accept or
+  decline); **Ask…** takes it into the talk; **Done**, **Dismiss** (not a problem here; a new
+  Check doesn't bring it back), **Reopen**.
+- Notes stay on their passage while you edit around and in them. When a passage is changed so
+  much that the note no longer fits, the note becomes **outdated** and is no longer drawn in the
+  text, instead of pointing at the wrong words.
+
+**Story memory…** (the bible): a model can't read a whole novel at every question, so it reads
+each chapter once and keeps notes, and those go along with everything you ask instead.
+
+- **Build / update** goes through the chapters in order: it reads one, writes its note, brings
+  the **Cast** (only the characters in that chapter) and the **Threads** up to date, and goes
+  on to the next. For each chapter it gets the summaries of the chapters before and the cast so
+  far, not the chapters themselves. Chapters that already have a current note are skipped. It
+  runs in the background; Stop, or closing the window, ends it, and the next build goes on from
+  there. **Make cast and threads again** makes both anew from all the notes.
+- **Read with**: the model that does the reading (remembered per project). A small one is
+  enough and much quicker: about a minute a chapter with a 9B model, three with a 27B one. It is
+  loaded for the build; your persona's own model comes back when you next ask it something. The
+  reader works without a persona voice: a plain archivist that records what happens, nothing
+  softened or left out.
+- **One chapter at a time**: marking a chapter **Done** reads that chapter (its note, then
+  cast and threads), loading the model if it isn't running. **Remember** under the chapter list
+  does the same without marking it done, and **Read this chapter** in the Story memory window
+  too. Working through a story in order this way, the memory always knows the chapters before
+  the one you are on. The chapter list shows "not in memory" and "memory outdated".
+- **Correct it**: open a note or page, fix what is wrong, Save. What you changed is locked (a
+  whole chapter note, or the sections of Cast and Threads, one per `## ` heading) and building
+  never overwrites it; **Unlock** gives it back to the model.
+- **Style (yours)**: what the writing is going for: genre and tone (a light, funny read for the
+  bus, or a lyrical tragedy), who it is for, pace, how much dialogue and description, the voice,
+  what to avoid, what it should feel like. It goes along with the talk, Review and the
+  templates that rewrite, so the model judges and writes by your aim instead of its own taste;
+  not with English polish (which only fixes) or the memory reader (which only records).
+- **Plans (yours)**: where the story is going, what must not be forgotten. Only you write it;
+  the models read it as plans, not as what happened.
+- What a model gets with every question: your plans, the cast, the threads and the chapter
+  notes (only their summaries, or only the chapters near the open one, when the model's context
+  is small), next to the open chapter itself.
+
+**The changes**: nothing a model writes is in your chapter until you accept it. Put the cursor
+in a change or right-click it: **✓ Accept**, **✗ Decline**, **✎ Edit…** (change it, then
+take it). The bar above the text has the same, ◀ ▶ to go from one to the next, and **Accept
+all** / **Decline all**. Changes wait across restarts and chapter switches; the chapter list
+shows how many each chapter has. You can type around them as usual.
+
 Where it is: `~/AIcove/writing/<project>/`: `project.txt` (title, the chapters in order, draft
-or done), `chapters/c001.md` …. Files can be edited by hand too; a chapter file put there
-joins at the end.
+or done, the persona), `chapters/c001.md` …, `bible/` (the story memory: `chapters/` notes,
+`cast.md`, `threads.md`, `style.md`, `plans.md`), `suggestions/` (the changes waiting), `review/` (the
+notes), `talk/` (the talks). The slop list is `~/AIcove/writing/slop.txt`. Files can be edited by hand too; a chapter file put there joins at the end.
 
 ## Personas
 
