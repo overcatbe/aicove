@@ -27,7 +27,9 @@ from .gui_chat import to_html
 from .settings import STATE_DIR
 
 ROLE = Qt.ItemDataRole.UserRole
-SAVE_AFTER = 1500      # ms without typing before the chapter is written to its file
+SAVE_EVERY = 60000     # ms: changed text is written to its file once a minute (and on Ctrl+S,
+                       # leaving the chapter, the tab or the window)
+COUNT_AFTER = 1000     # ms without typing before word counts and labels catch up
 
 
 def loose(*labels):
@@ -114,7 +116,8 @@ class ChapterEditor(TextBox):
         self.items = []
         self.notes = []
         self.current_note = None
-        self.cursorPositionChanged.connect(self.paint)
+        self.under_cursor = None
+        self.cursorPositionChanged.connect(self.moved)
 
     # --- positions: Qt counts UTF-16 units, Python characters -----------------------
 
@@ -416,6 +419,17 @@ class ChapterEditor(TextBox):
                 sel.format.setBackground(back)
                 marks.append(sel)
         self.setExtraSelections(marks)
+
+    def moved(self):
+        """The cursor moved: redraw only when it went into or out of a change or note (the
+        marks themselves follow the text by themselves)."""
+        if not self.items and not self.notes:
+            return
+        pos = self.textCursor().position()
+        now = (self.at(pos), self.note_at(pos))
+        if now != self.under_cursor:
+            self.under_cursor = now
+            self.paint()
 
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu()
@@ -1594,7 +1608,7 @@ class ReviewPanel(QWidget):
     def changed(self):
         self.tab.editor.paint()
         self.tab.notes_dirty = True
-        self.tab.save_timer.start()
+        self.tab.save_soon()
         self.tab.relabel()
 
     def check(self):
@@ -1973,7 +1987,7 @@ class WritingTab(QWidget):
         self.editor.setToolTip("Ctrl + mouse wheel (or Ctrl+= / Ctrl+-) makes the text bigger or smaller")
         self.editor.textChanged.connect(self.typed)
         self.editor.items_changed.connect(self.items_changed)
-        self.editor.cursorPositionChanged.connect(self.show_bar)
+        self.editor.cursorPositionChanged.connect(lambda: self.editor.items and self.show_bar())
         QShortcut(QKeySequence.StandardKey.ZoomIn, self.editor).activated.connect(lambda: self.editor.zoom(1))
         QShortcut(QKeySequence("Ctrl+="), self.editor).activated.connect(lambda: self.editor.zoom(1))
         QShortcut(QKeySequence.StandardKey.ZoomOut, self.editor).activated.connect(lambda: self.editor.zoom(-1))
@@ -2025,7 +2039,11 @@ class WritingTab(QWidget):
 
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
-        self.save_timer.setInterval(SAVE_AFTER)
+        self.save_timer.setInterval(SAVE_EVERY)
+        self.count_timer = QTimer(self)
+        self.count_timer.setSingleShot(True)
+        self.count_timer.setInterval(COUNT_AFTER)
+        self.count_timer.timeout.connect(self.counted)
         self.save_timer.timeout.connect(self.save)
         QShortcut(QKeySequence.StandardKey.Save, self).activated.connect(lambda: self.leave("Saved"))
         QApplication.instance().aboutToQuit.connect(self.shutdown)
@@ -2271,12 +2289,21 @@ class WritingTab(QWidget):
         count = writing.words(writing.body_of(self.editor.file_text()))
         unsaved = self.editor.file_text() != self.saved_text
         self.status.setText(f"This chapter {count:,} words · all chapters {self.total:,} words · "
-                            + (note or ("not saved yet" if unsaved else "saved")))
+                            + (note or ("not saved yet: within a minute, or Ctrl+S" if unsaved else "saved")))
 
     def typed(self):
+        """Every keystroke: as little as possible. The save comes within a minute, the counts
+        when you pause."""
         if self.loading or self.file is None:
             return
-        self.save_timer.start()
+        self.save_soon()
+        self.count_timer.start()
+
+    def save_soon(self):
+        if not self.save_timer.isActive():
+            self.save_timer.start()
+
+    def counted(self):
         self.relabel()
         self.show_status()
 
@@ -2373,7 +2400,8 @@ class WritingTab(QWidget):
             self.done_btn.setText("Back to draft" if self.status_of(self.file) == "done" else "Done")
             if self.status_of(self.file) == "done" \
                     and writing.note_state(self.project, self.file) in ("none", "outdated"):
-                self.remember(files=[self.file])
+                # The model only works when asked: a hint, not a run.
+                self.show_status("done · its story memory is out of date: Remember reads it again")
 
     def delete_chapter(self):
         if self.file is None:
@@ -2395,7 +2423,7 @@ class WritingTab(QWidget):
 
     def items_changed(self):
         self.items_dirty = True
-        self.save_timer.start()
+        self.save_soon()
         self.relabel()
         self.show_bar()
 

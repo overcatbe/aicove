@@ -205,7 +205,9 @@ memory…** and **Copy for AO3**.
   per paragraph, `<em>` for italics, scene breaks centred. Paste it into AO3's HTML box (or its
   rich text box). Changes still waiting are not in it.
 - **The editor**: write or paste. Pasting from a web page or a word processor keeps italics
-  and bold as `*italics*` and `**bold**`. It saves by itself a moment after you stop typing.
+  and bold as `*italics*` and `**bold**`. Changed text is saved once a minute, on **Ctrl+S**,
+  and when you go to another chapter or tab or close the window. A model always reads the text
+  as it is in the editor when you ask, saved or not.
 - **New chapter** goes after the selected one; ▲ ▼ move it; **Done** marks it finished for now
   (later the story memory is built from done chapters); **Delete** moves it to the project's
   `.trash` folder.
@@ -276,11 +278,12 @@ each chapter once and keeps notes, and those go along with everything you ask in
   loaded for the build; your persona's own model comes back when you next ask it something. The
   reader works without a persona voice: a plain archivist that records what happens, nothing
   softened or left out.
-- **One chapter at a time**: marking a chapter **Done** reads that chapter (its note, then
-  cast and threads), loading the model if it isn't running. **Remember** under the chapter list
-  does the same without marking it done, and **Read this chapter** in the Story memory window
-  too. Working through a story in order this way, the memory always knows the chapters before
-  the one you are on. The chapter list shows "not in memory" and "memory outdated".
+- **One chapter at a time**: **Remember** under the chapter list reads the selected chapter
+  (its note, then cast and threads); so does **Read this chapter** in the Story memory window.
+  Models only work when you ask: marking a chapter **Done** reads nothing, it only tells you
+  when the chapter's memory is out of date. Working through a story in order, Remember each
+  chapter when you are through with it, and the memory knows the chapters before the one you
+  are on. The chapter list shows "not in memory" and "memory outdated".
 - **Correct it**: open a note or page, fix what is wrong, Save. What you changed is locked (a
   whole chapter note, or the sections of Cast and Threads, one per `## ` heading) and building
   never overwrites it; **Unlock** gives it back to the model.
