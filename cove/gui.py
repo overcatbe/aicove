@@ -3465,6 +3465,8 @@ class Window(QMainWindow):
         elif not self.writing_tab.leave():
             event.ignore()
         else:
+            if self.chat_tab.measuring is not None:
+                self.chat_tab.measuring.wait(3000)   # a thread still running when the window goes ends the program badly
             event.accept()
 
 

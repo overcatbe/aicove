@@ -176,8 +176,10 @@ class Measure(QThread):
     knowledge and tools, the summary and the chat (as summary.py counts it)."""
     done = pyqtSignal(object, int, int)
 
-    def __init__(self, persona, conversation, n_ctx):
-        super().__init__()
+    def __init__(self, persona, conversation, n_ctx, parent):
+        # A parent keeps it alive until it has really ended: dropped while its thread still runs,
+        # Qt ends the whole program.
+        super().__init__(parent)
         self.persona, self.n_ctx = persona, n_ctx
         # A copy: the chat may change while this runs.
         c = conversation or chat.Chat(persona.id, "")
@@ -788,7 +790,8 @@ class ChatTab(QWidget):
         if key == self.measured_for and not again:
             return
         self.measured_for = key
-        self.measuring = Measure(self.persona, self.chat, self.contexts.get(loaded.name))
+        self.measuring = Measure(self.persona, self.chat, self.contexts.get(loaded.name), self)
+        self.measuring.finished.connect(self.measuring.deleteLater)
         self.measuring.done.connect(lambda cid, used, n_ctx, name=loaded.name: self.measured(cid, used, n_ctx, name))
         self.measuring.start()
 
