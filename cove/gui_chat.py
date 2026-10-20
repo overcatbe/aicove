@@ -2,6 +2,7 @@
 # the model it runs on is started here when another one is loaded.
 
 import html
+import math
 import json
 import os
 import re
@@ -137,6 +138,56 @@ def to_html(text, dark):
     parts = re.split(r"(```.*?```|`[^`\n]*`)", text, flags=re.S)
     return md.convert("".join(p if i % 2 else re.sub(r"!\[[^\]]*\]\([^)]*\)", "", p)
                               for i, p in enumerate(parts)))
+
+
+class Face(QWidget):
+    """The persona's picture at the top right, with a ring that pulses while the model works:
+    orange while it thinks or uses tools, the accent colour while it writes, slow grey while a
+    model loads. state() says which ("thinking", "writing", "loading" or None)."""
+    RING = 5
+
+    def __init__(self, state, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.pixmap = None
+        self.now = None
+        self.phase = 0.0
+        self.setFixedSize(CHAT_FACE_SIZE, CHAT_FACE_SIZE)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.step)
+        self.timer.start(40)
+
+    def setPixmap(self, pixmap):
+        self.pixmap = pixmap
+        self.update()
+
+    def step(self):
+        now = self.state() if self.isVisible() else None
+        if now is None and self.now is None:
+            return
+        self.phase += 0.04 if now == "loading" else 0.1
+        self.now = now
+        self.update()
+
+    def paintEvent(self, _):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        inner = self.rect().adjusted(self.RING + 1, self.RING + 1, -self.RING - 1, -self.RING - 1)
+        if self.pixmap is not None:
+            painter.drawPixmap(inner, self.pixmap)
+        if self.now is None:
+            return
+        colour = QColor({"thinking": "#e08a1e", "loading": "#8a8a8a"}.get(
+            self.now, self.palette().highlight().color().name()))
+        glow = 0.5 + 0.5 * math.sin(self.phase)
+        colour.setAlphaF(0.25 + 0.75 * glow)
+        pen = painter.pen()
+        pen.setColor(colour)
+        pen.setWidthF(1.5 + (self.RING - 1.5) * glow)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        half = pen.widthF() / 2
+        painter.drawEllipse(self.rect().toRectF().adjusted(half + 0.5, half + 0.5, -half - 0.5, -half - 0.5))
 
 
 class Reply(QThread):
@@ -483,8 +534,7 @@ class ChatTab(QWidget):
         self.knowledge_btn = QPushButton("Knowledge…")
         self.knowledge_btn.clicked.connect(self.open_knowledge)
         # The persona's picture, once, at the top right (not with every answer).
-        self.face = QLabel()
-        self.face.setFixedSize(CHAT_FACE_SIZE, CHAT_FACE_SIZE)
+        self.face = Face(self.working)
         top = QHBoxLayout()
         top.addWidget(self.title)
         top.addStretch(1)
@@ -649,10 +699,20 @@ class ChatTab(QWidget):
         self.show_knowledge()
         self.fill_chats()
 
+    def working(self):
+        """What the model does for this chat right now, for the ring around the face."""
+        if self.worker is not None:
+            live = self.live or {}
+            return "writing" if live.get("text") else "thinking"
+        if self.waiting is not None or self.window.busy():
+            return "loading"
+        return None
+
     def show_face(self):
         ratio = self.devicePixelRatioF()
+        side = CHAT_FACE_SIZE - 2 * (Face.RING + 1)
         pixmap = QPixmap(face(self.persona)).scaled(
-            int(CHAT_FACE_SIZE * ratio), int(CHAT_FACE_SIZE * ratio),
+            int(side * ratio), int(side * ratio),
             Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         pixmap.setDevicePixelRatio(ratio)
         self.face.setPixmap(pixmap)
