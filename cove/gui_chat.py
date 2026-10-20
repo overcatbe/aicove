@@ -194,6 +194,27 @@ class Measure(QThread):
         self.done.emit(self.conversation.id, used, n_ctx)
 
 
+class Summarise(QThread):
+    """Summarises the older messages now, when asked by hand (the button by the meter)."""
+    failed = pyqtSignal(str)
+    said = pyqtSignal(str)
+
+    def __init__(self, persona, conversation, parent):
+        super().__init__(parent)
+        self.persona, self.conversation = persona, conversation
+        self.changed = False
+
+    def stop(self):
+        pass
+
+    def run(self):
+        try:
+            system, tools = chat.setup(self.persona, self.conversation)
+            self.changed = summary.keep_up(self.conversation, system + json.dumps(tools), self.said.emit, now=True)
+        except (OSError, ValueError, KeyError) as e:
+            self.failed.emit(str(e))
+
+
 class WriteDialog(QDialog):
     """A persona wants to write a file: what changes, and Write it / Don't."""
 
@@ -551,6 +572,12 @@ class ChatTab(QWidget):
         self.meter.setMaximumHeight(18)
         self.meter.hide()
         knobs.addWidget(self.meter)
+        self.summarise_btn = QPushButton("Summarise")
+        self.summarise_btn.setToolTip("Summarise the older messages now (\"So far\" above the chat), before "
+                                      "the context is full. The newer ones stay as they are.")
+        self.summarise_btn.clicked.connect(self.summarise_now)
+        self.summarise_btn.hide()
+        knobs.addWidget(self.summarise_btn)
         self.measuring = None
         self.measured_for = None
         self.contexts = {}   # launcher name -> its context size, once asked
@@ -779,6 +806,7 @@ class ChatTab(QWidget):
         if self.persona is None or loaded is None or loaded.name != self.model.currentData() \
                 or self.window.busy() or self.window.health.state != "ready":
             self.meter.hide()
+            self.summarise_btn.hide()
             self.measured_for = None
             return
         key = (self.persona.id, self.chat.id if self.chat else None,
@@ -801,6 +829,7 @@ class ChatTab(QWidget):
             self.measured_for = None
             if used < 0:
                 self.meter.hide()
+                self.summarise_btn.hide()
             return
         self.contexts[name] = n_ctx
         share = used / max(n_ctx, 1)
@@ -813,6 +842,31 @@ class ChatTab(QWidget):
             f"persona's prompt, its facts and knowledge, and this chat. From {summary.TRIGGER:.0%} on "
             f"the oldest messages are summarised (\"So far\" above the chat).")
         self.meter.show()
+        covered = summary.current(self.chat)[0] if self.chat else 0
+        self.summarise_btn.setVisible(self.chat is not None and len(self.chat.messages) - covered >= 4)
+
+    def summarise_now(self):
+        if self.chat is None or self.worker or self.waiting:
+            return
+        self.problem = None
+        self.live = {"thinking": "", "text": "", "status": "Summarising the older messages…"}
+        self.summarise_btn.setEnabled(False)
+        self.worker = Summarise(self.persona, self.chat, self)
+        self.worker.said.connect(lambda text: self.on_part("status", text))
+        self.worker.failed.connect(lambda error: QMessageBox.warning(self, "Summarise", f"No summary: {error}"))
+        self.worker.finished.connect(self.summarised)
+        self.paint()
+        self.worker.start()
+
+    def summarised(self):
+        worker, self.worker = self.worker, None
+        worker.deleteLater()
+        self.live = None
+        self.summarise_btn.setEnabled(True)
+        if not worker.changed:
+            self.window.say("Nothing to summarise yet: the chat is short.")
+        self.paint()
+        self.measure(again=True)
 
     def load_model(self, then=None):
         name = self.model.currentData()

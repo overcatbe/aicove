@@ -66,6 +66,9 @@ instead of them; the newest part stays word for word. The bar right of the menus
 it turns orange from 70%). It shows while the persona's model is loaded. The chat on screen
 stays complete:
 
+- **Summarise** next to the bar does it now, before the 70%: the older half of the chat (at
+  least) goes into the summary, the newer part stays. Handy before a long piece of work, or
+  before switching to a model with a smaller context.
 - The summary shows as **So far** at the top of the chat. **edit** it to correct or add what
   matters; **drop** it and the persona sees everything again (and makes a new summary when
   needed).

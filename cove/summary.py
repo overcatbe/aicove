@@ -141,10 +141,11 @@ def usage(chat, fixed, n_ctx=None):
     return used, n_ctx
 
 
-def keep_up(chat, fixed, say=lambda text: None):
-    """Summarise older messages if the chat has grown past TRIGGER of the context. fixed is
-    what goes with every request besides the messages (system prompt, tools). Returns True if
-    the summary changed. Raises OSError when llama-server can't be asked."""
+def keep_up(chat, fixed, say=lambda text: None, now=False):
+    """Summarise older messages if the chat has grown past TRIGGER of the context, or now=True
+    (asked for by hand: then the older half at least, also below TRIGGER). fixed is what goes
+    with every request besides the messages (system prompt, tools). Returns True if the summary
+    changed. Raises OSError when llama-server can't be asked."""
     messages = chat.messages
     covered, text = current(chat)
     if len(messages) - covered < 4:
@@ -155,12 +156,12 @@ def keep_up(chat, fixed, say=lambda text: None):
     sent = [sent_of(m) for m in messages]
     base = count(fixed + "\n" + text)
     live = size_of(sent[covered:], messages[covered:])
-    if base + live <= TRIGGER * n_ctx:
+    if base + live <= TRIGGER * n_ctx and not now:
         return False
     # Walk back from the newest message until the share to keep is full; the kept part starts
     # with a message of the user's, so no tool result is cut off from its call.
     per_char = live / max(sum(len(l) for l in sent[covered:]), 1)
-    budget, used, cut = KEEP * n_ctx, 0.0, None
+    budget, used, cut = min(KEEP * n_ctx, live / 2) if now else KEEP * n_ctx, 0.0, None
     for i in range(len(messages) - 1, covered, -1):
         used += len(sent[i]) * per_char + 8 + (PICTURE_TOKENS if messages[i].get("picture") else 0)
         if used > budget and cut is not None:
