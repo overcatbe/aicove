@@ -177,6 +177,17 @@ source.
 - **Themes**, one per line: `Name | what it means to you | persona to work on it with`.
 - **Task**: what it should do, in words.
 
+**Research…** (next to Run now) gives the agent one topic to dig into instead: "Nazi weather
+stations and U-boats in the Arctic", "Bilderberg 2026", a name, a question. Old sources are
+welcome there (archives, research, books, news of any year, fringe sites marked as fringe). It
+reads page after page and notes each source on a card (what the page says, what kind of source
+it is), then writes a **dossier** as its report: what is solid, what is disputed or only
+claimed and by whom, open questions, 3 to 5 proposed articles with angle, hook and sources, and
+all the source cards. On a dossier, **Write articles…** has a persona of your choice write
+articles from it (headline, teaser, text) in its own voice, facts only from the dossier's
+sources, with wishes like "in German, about 800 words"; they come under Reports too. Research
+runs are long: give it more searches, pages and minutes than a news hunt.
+
 A lead may come straight from a search result (the report shows what the result said, or that
 the agent read the page); its address must be one the search gave or a page it read. A written-up
 story stands on pages the agent read in that run, from as many different sites as **sites**

@@ -146,6 +146,31 @@ class WorkDialog(QDialog):
         box.addWidget(buttons)
 
 
+class ArticlesDialog(QDialog):
+    def __init__(self, parent, story, names, default):
+        super().__init__(parent)
+        self.setWindowTitle("Write articles")
+        form = QFormLayout(self)
+        form.addRow(QLabel(f"Articles from the dossier\n\"{story.title}\"\nin a persona's voice, facts only from "
+                           "its sources. They come under Reports."))
+        self.who = QComboBox()
+        for pid, name in sorted(names.items(), key=lambda x: x[1].lower()):
+            self.who.addItem(name, pid)
+        self.who.setCurrentIndex(max(self.who.findData(default), 0))
+        form.addRow("Written by", self.who)
+        self.count = QSpinBox()
+        self.count.setRange(1, 5)
+        self.count.setValue(3)
+        form.addRow("How many", self.count)
+        self.wish = QLineEdit()
+        self.wish.setPlaceholderText("optional: in German, about 800 words, for Night Owl Wire…")
+        form.addRow("Wishes", self.wish)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+
 class AgentsTab(QWidget):
     def __init__(self, window):
         super().__init__()
@@ -237,9 +262,14 @@ class AgentsTab(QWidget):
         work_btn = QPushButton("Work on it…")
         work_btn.setToolTip("A new chat with a persona of your choice, the story and its sources in it to start from")
         work_btn.clicked.connect(self.work_on_it)
+        self.articles_btn = QPushButton("Write articles…")
+        self.articles_btn.setToolTip("Articles from this research dossier, written by a persona you pick")
+        self.articles_btn.clicked.connect(self.write_articles)
+        self.articles_btn.hide()
         self.mark_btns = {}
         buttons = QHBoxLayout()
         buttons.addWidget(work_btn)
+        buttons.addWidget(self.articles_btn)
         buttons.addStretch(1)
         for status, label, tip in (("kept", "Keep", "Worth keeping; more like this in the next hunts"),
                                    ("used", "Used", "You made something of it"),
@@ -324,6 +354,7 @@ class AgentsTab(QWidget):
 
     def show_story(self, *_):
         e, s = self.story()
+        self.articles_btn.setVisible(s is not None and s.meta.get("kind") == "dossier")
         if s is None:
             return
         dark = self.palette().window().color().lightness() < 128
@@ -382,6 +413,20 @@ class AgentsTab(QWidget):
             tab.controls["web"].setCurrentIndex(max(tab.controls["web"].findData("on"), 0))
         tab.input.setPlainText(f"Let's work on this story ({e.agent.name} found it):\n\n{s.markdown()}")
         tab.input.setFocus()
+
+    def write_articles(self, *_):
+        e, s = self.story()
+        if s is None or s.meta.get("kind") != "dossier":
+            return
+        names = self.personas_of(e.place)
+        default = e.agent.work_with("Research") or e.agent.persona
+        dialog = ArticlesDialog(self, s, names, default)
+        if not dialog.exec():
+            return
+        extra = ["--articles", s.file, "--persona", dialog.who.currentData(), "--count", str(dialog.count.value())]
+        if dialog.wish.text().strip():
+            extra += ["--wish", dialog.wish.text().strip()]
+        self.start(e, extra, f"writing {dialog.count.value()} article(s) as {dialog.who.currentText()}")
 
     # --- Agents ----------------------------------------------------------------
 
@@ -489,13 +534,17 @@ class AgentsTab(QWidget):
         self.save_btn.clicked.connect(self.save)
         self.run_btn = QPushButton("Run now")
         self.run_btn.clicked.connect(self.run_now)
+        self.research_btn = QPushButton("Research…")
+        self.research_btn.setToolTip("Research one topic in depth (old sources welcome): its sources and a dossier "
+                                     "with article ideas come under Reports; Write articles… makes articles of it")
+        self.research_btn.clicked.connect(self.research)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self.stop_run)
         self.folder_btn = QPushButton("Open folder")
         self.folder_btn.clicked.connect(self.open_folder)
         buttons = QHBoxLayout()
         buttons.addWidget(self.state_label, 1)
-        for b in (self.folder_btn, self.save_btn, self.run_btn, self.stop_btn):
+        for b in (self.folder_btn, self.save_btn, self.run_btn, self.research_btn, self.stop_btn):
             buttons.addWidget(b)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -626,6 +675,7 @@ class AgentsTab(QWidget):
             self.state_label.setText("")
             self.log.setPlainText("")
             self.run_btn.setEnabled(False)
+            self.research_btn.setEnabled(False)
             self.stop_btn.setEnabled(False)
             return
         st = e.state
@@ -640,6 +690,7 @@ class AgentsTab(QWidget):
         self.cron.setText("Run on schedule on this machine" if not e.place else f"Run on schedule on {e.place}")
         self.cron.blockSignals(False)
         self.run_btn.setEnabled(not runs)
+        self.research_btn.setEnabled(not runs)
         self.stop_btn.setEnabled(runs)
         if self.log.toPlainText() != e.log:
             self.log.setPlainText(e.log)
@@ -757,19 +808,35 @@ class AgentsTab(QWidget):
         self.current = None
         self.reload()
 
-    def run_now(self):
+    def research(self):
+        e = self.current
+        if e is None:
+            return
+        topic, ok = QInputDialog.getText(self, "Research", f"What should {e.agent.name} research? A topic, names, "
+                                         "a question:\n(e.g. Nazi weather stations and U-boats in the Arctic)")
+        topic = " ".join(topic.split())
+        if ok and topic:
+            self.run_now(["--topic", topic], f"researching \"{topic}\"")
+
+    def run_now(self, extra=(), what=""):
         e = self.current
         if e is None:
             return
         if self.dirty() and not self.save():
             return
-        e = self.current
+        self.start(self.current, list(extra or []), what)
+
+    def start(self, e, extra, what=""):
+        """Start a run of e (a hunt, a research or articles: extra) here or on its machine."""
+        if e.state.get("pid") or e.state.get("result") == "running":
+            QMessageBox.information(self, e.agent.name, f"{e.agent.name} is running; wait until it is done or stop it.")
+            return
         take = False
         if not e.place:
             loaded = chat.loaded_launcher()
             if (loaded is not None or server.llama_pid()) and (loaded is None or loaded.name not in e.agent.models):
-                what = loaded.name if loaded else "Another model"
-                if QMessageBox.question(self, "Run now", f"{what} is loaded and isn't one of {e.agent.name}'s models. "
+                other = loaded.name if loaded else "Another model"
+                if QMessageBox.question(self, "Run now", f"{other} is loaded and isn't one of {e.agent.name}'s models. "
                                         f"Stop it and start {e.agent.models[0] if e.agent.models else 'its model'}?") \
                         != QMessageBox.StandardButton.Yes:
                     return
@@ -779,13 +846,13 @@ class AgentsTab(QWidget):
                                         "Stop it there if it still is?") == QMessageBox.StandardButton.Yes
         try:
             if e.place:
-                on_host(e.place, ["start", e.agent.id] + (["--take-model"] if take else []))
+                on_host(e.place, ["start", e.agent.id] + extra + (["--take-model"] if take else []))
             else:
-                agents.detach(e.agent.id, take)
+                agents.detach(e.agent.id, take, extra)
         except OSError as err:
             self.window.say(f"Can't start {e.agent.name}: {err}")
             return
-        self.window.say(f"{e.agent.name} started" + (f" on {e.place}" if e.place else "")
+        self.window.say(f"{e.agent.name} started" + (f", {what}," if what else "") + (f" on {e.place}" if e.place else "")
                         + ". It goes on when the window closes; its reports show up under Reports.")
         e.state = dict(e.state, result="running")
         self.show_state()
