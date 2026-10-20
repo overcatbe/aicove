@@ -137,8 +137,11 @@ server running elsewhere (anything with the OpenAI image API). Needs a model tha
 ## Agents
 
 An agent is a persona with a standing task that works on its own and comes back with
-reports. The first one is a story hunter: it searches the web for stories on your themes and
-writes each one up as a small article with its sources and the facts to check.
+reports. The first one is a story hunter: it searches the web for news on your themes and
+brings **leads**: a headline, a line or two on what it is and why it is interesting, and the
+link, many of them, for you to scan and pick from. Set its **sites** limit to 2 or more and it
+writes each story up instead, as a small article from that many different sites, with the facts
+to check.
 
 **Reports** shows what the agents brought, newest first; new ones in bold. Filter by
 status, theme and agent. A report has a title, a teaser, the article, its sources (only pages
@@ -163,8 +166,10 @@ source.
   `mon wed fri 08:30`. It only runs when **Run on schedule on this machine** is ticked: that
   puts one line in your crontab which runs `aicove agent due` every 10 minutes. A run missed
   while the machine was off is made up once.
-- **Style** (Factual is good for reports), **Thinking**, **Limits**: searches, pages read,
-  tool calls, minutes and stories per run.
+- **Style** (Factual is good for reports), **Thinking** (off makes a hunt for leads much faster),
+  **Limits**: searches, pages read, tool calls, minutes, stories or leads per run, and
+  **sites**: 1 = leads, 2 or more = written-up stories from that many sites. Each step of a run
+  may think for about 3000 words at most; a model cut off is told to act.
 - **Search from**: where its searches and page reads go out from. Normally the machine it runs
   on; or another machine of yours that ssh knows (a `Host` in `~/.ssh/config`) and that has a
   SearXNG as a user service on 127.0.0.1:8081. Then sites see that machine's address, not yours.
@@ -172,9 +177,11 @@ source.
 - **Themes**, one per line: `Name | what it means to you | persona to work on it with`.
 - **Task**: what it should do, in words.
 
-A story is only saved when it stands on real articles: pages the agent read in that run, from at
-least two different sites, no front pages (a front page only helps find articles), and not
-older than 3 days when the pages say when they came out. A search for an old year ("October
+A lead may come straight from a search result (the report shows what the result said, or that
+the agent read the page); its address must be one the search gave or a page it read. A written-up
+story stands on pages the agent read in that run, from as many different sites as **sites**
+says. Neither may be a front page (a front page only helps find articles) or older than 3 days
+when the page or its address says when it came out. A search for an old year ("October
 2024": models like the year they were trained in) is sent back. The agent is told today's and
 yesterday's date. For finding stories a persona with a plain or no prompt works best: a
 brainstorming persona invents angles and critics; let it work on the story afterwards (the

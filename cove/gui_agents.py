@@ -27,8 +27,8 @@ HERE = ""          # the place of this machine's agents; another machine's is it
 SHOW = [("Not dismissed", lambda s: s != "dismissed"), ("New", lambda s: s == "new"),
         ("Kept", lambda s: s == "kept"), ("Used", lambda s: s == "used"),
         ("Dismissed", lambda s: s == "dismissed"), ("All", lambda s: True)]
-NEW_TASK = ("Find fresh stories from the last few days for my themes. Prefer original reporting and primary "
-            "sources over aggregators. Read at least one page, better two independent ones, before saving a story.")
+NEW_TASK = ("Bring me the latest news from yesterday and today for my themes: many leads, spread over all "
+            "themes, so I can pick what to write about. Original reporting over aggregators.")
 
 
 def cache_path(host):
@@ -296,7 +296,9 @@ class AgentsTab(QWidget):
                 continue
             where = f" · 🖥 {e.place}" if e.place else ""
             status = "" if s.status == "new" else f" · {s.status}"
-            item = QListWidgetItem(f"{s.title}\n{s.theme} · {s.found} · {e.agent.name}{where}{status}")
+            teaser = s.teaser if len(s.teaser) <= 160 else s.teaser[:160].rsplit(" ", 1)[0] + "…"
+            item = QListWidgetItem(f"{s.title}\n{teaser}\n{s.theme} · {s.found} · {e.agent.name}{where}{status}"
+                                   if teaser else f"{s.title}\n{s.theme} · {s.found} · {e.agent.name}{where}{status}")
             item.setData(ROLE, (e.place, e.agent.id, s.file))
             item.setToolTip(s.teaser)
             if s.status == "new":
@@ -326,7 +328,9 @@ class AgentsTab(QWidget):
             return
         dark = self.palette().window().color().lightness() < 128
         head = f"*{s.theme} · {s.found} · {e.agent.name}" + (f" on {e.place}" if e.place else "") + f" · {s.status}*\n\n"
-        self.story_view.setHtml(to_html(f"# {s.title}\n\n" + head + f"**{s.teaser}**\n\n{s.body}", dark))
+        # A lead's body starts with its teaser already.
+        teaser = "" if s.meta.get("kind") == "lead" else f"**{s.teaser}**\n\n"
+        self.story_view.setHtml(to_html(f"# {s.title}\n\n" + head + teaser + s.body, dark))
 
     def mark(self, status):
         e, s = self.story()

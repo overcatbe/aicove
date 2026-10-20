@@ -28,12 +28,13 @@ AGENT_DIR = os.path.join(COVE_DIR, "agents")
 AGENT_FILE = "agent.txt"
 SAFE_ID = personas.SAFE_ID
 STATUSES = ["new", "kept", "used", "dismissed"]
-LIMITS = {"searches": 15, "pages": 12, "steps": 40, "minutes": 20, "stories": 3}
+LIMITS = {"searches": 15, "pages": 12, "steps": 40, "minutes": 20, "stories": 3, "sites": 1}
 LIMIT_WORDS = {"searches": "web searches", "pages": "pages read", "steps": "tool calls in all",
-               "minutes": "minutes", "stories": "stories per run"}
-# A story needs pages from this many different sites, and its newest page may be this many days
-# old at most (when the pages say when they came out).
-SITES = 2
+               "minutes": "minutes", "stories": "stories (or leads) per run",
+               "sites": "1: leads (a headline, why, one link, also straight from search results), for you to pick "
+                        "from. 2 or more: written-up stories, each from articles of that many different sites"}
+# A story's or lead's newest page may be this many days old at most (when the pages say when they
+# came out). How many sites a story needs is the agent's "sites" limit; 1 means leads.
 FRESH_DAYS = 3
 # Front pages and section pages: a place to find articles, never a source.
 FRONT = re.compile(r"/?(?:[a-z]{2}(?:[-_][a-z]{2})?/?)?(?:index\.\w+|home|news|latest|world|politics|science|"
@@ -278,6 +279,8 @@ class Story:
 
     def markdown(self):
         """The whole report, to read or to hand to a chat."""
+        if self.meta.get("kind") == "lead":
+            return f"# {self.title}\n\n{self.body}\n"
         return f"# {self.title}\n\n*{self.teaser}*\n\n{self.body}\n"
 
 
@@ -462,7 +465,19 @@ SAVE_TOOL = {"type": "function", "function": {
                                           "each ending with the number of its source in brackets, e.g. \"... [1]\"."},
     }}}}
 
-RULES = """[You work alone now, as an agent. Nobody reads along and nobody answers questions: decide yourself.]
+LEAD_TOOL = {"type": "function", "function": {
+    "name": "save_lead",
+    "description": "Save one lead for the user: a news item they may pick to write about. The address must be "
+                   "a search result you got or a page you read in this hunt.",
+    "parameters": {"type": "object", "required": ["title", "theme", "why", "url"], "properties": {
+        "title": {"type": "string", "description": "What happened, as a short headline."},
+        "theme": {"type": "string", "description": "Which of the themes it belongs to."},
+        "why": {"type": "string", "description": "One or two sentences: what it is and why it is interesting, "
+                                                 "only from what the search result or page says."},
+        "url": {"type": "string", "description": "The article's address, exactly as in the result or page."},
+    }}}}
+
+HEAD = """[You work alone now, as an agent. Nobody reads along and nobody answers questions: decide yourself.]
 
 Your task:
 {task}
@@ -474,7 +489,21 @@ How to work:
 - Today is {today}; yesterday was {yesterday}. The year is {year}. Search with web_search (at most \
 {searches} searches) and read pages with read_web_page (at most {pages} pages). Search theme by theme, with \
 the date in the search (like "{yesterday_short}") to get recent news.
-- Save every good story with save_story, at most {stories} this time. Only pages you really read with \
+"""
+
+LEADS = HEAD + """- You bring leads, not articles: the user scans them and picks what to write about. Bring many, up \
+to {stories}, spread over all themes: the latest news, what goes viral, what people fight about, the absurd. \
+Different stories, not the same one twice.
+- Save each with save_lead: a short headline, one or two sentences on what it is and why it is interesting, \
+the article's address. A search result is enough: you need not open the page, but say only what the result \
+or the page says, nothing invented. Open a page only when the result is too thin to tell what happened.
+- The address must be an article from your search results or a page you read, copied exactly; never from \
+memory. A front page or an index of articles is not a lead: find the article. Nothing older than {fresh} \
+days: that is not news.
+- Work fast: a search, then save the good leads from it, then the next search. When you are done, answer \
+with one short line about the hunt, without a tool call."""
+
+RULES = HEAD + """- Save every good story with save_story, at most {stories} this time. Only pages you really read with \
 read_web_page count as sources. Never write an address from memory. A list of results, a front page or an \
 index of articles is not a source: open the article itself.
 - A story needs at least {sites} articles from different sites about the same thing: after the first one, \
@@ -502,10 +531,10 @@ def system_prompt(agent, persona):
     themes = "\n".join(f"- {n}: {m}" if m else f"- {n}" for n, m, _ in agent.themes) or "- anything the task names"
     parts = [persona.system.strip() if persona else "", facts.for_prompt(persona.id) if persona else ""]
     yesterday = datetime.date.today() - datetime.timedelta(days=1)
-    rules = RULES.format(task=agent.task.strip() or "Find stories for the themes.", themes=themes,
+    rules = (LEADS if agent.limits["sites"] <= 1 else RULES).format(task=agent.task.strip() or "Find stories for the themes.", themes=themes,
                          today=time.strftime("%A, %d %B %Y"), yesterday=yesterday.strftime("%A, %d %B %Y"),
                          yesterday_short=f"{yesterday.day} {yesterday:%B %Y}", year=datetime.date.today().year,
-                         sites=SITES, fresh=FRESH_DAYS, **agent.limits)
+                         fresh=FRESH_DAYS, **agent.limits)
     known = stories(agent.id)
     before = [s for s in known][:30]
     if before:
@@ -550,18 +579,24 @@ def tools_for(left):
     if left["pages"] > 0:
         tools.append(web.TOOLS[1])
     if left["stories"] > 0:
-        tools.append(SAVE_TOOL)
+        tools.append(LEAD_TOOL if left["sites"] <= 1 else SAVE_TOOL)
     return tools
 
 
 def cut_old_pages(messages):
     """What the model gets: older pages shortened, so a long hunt fits the context."""
     pages = [i for i, m in enumerate(messages) if m.get("role") == "tool" and m.get("name") == "read_web_page"]
+    searches = [i for i, m in enumerate(messages) if m.get("role") == "tool" and m.get("name") == "web_search"]
     out = []
     for i, m in enumerate(messages):
         m = {k: v for k, v in m.items() if k != "name"}
         if i in pages[:-WHOLE_PAGES] and len(m["content"]) > CUT_PAGE:
             m["content"] = m["content"][:CUT_PAGE] + "\n[... shortened: you read this page earlier]"
+        elif i in searches[:-WHOLE_PAGES] and len(m["content"]) > CUT_PAGE:
+            # Only the titles and addresses: what it may still save as a lead.
+            blocks = m["content"].split("\n\n")
+            m["content"] = "\n".join([blocks[0]] + ["\n".join(b.split("\n")[:2]) for b in blocks[1:]]) + \
+                "\n[... shortened: you searched this earlier]"
         out.append(m)
     return out
 
@@ -607,13 +642,14 @@ def save_story(agent, a, fetched, saved, say, dates=None):
     if not good:
         return ("Not saved: " + ", ".join(fronts) + " is a front page, not an article. Open the article itself "
                 "with read_web_page and save the story with its address.")
-    if len({site(u) for u in good}) < SITES:
-        return (f"Not saved: a story needs articles from at least {SITES} different sites, this has "
+    sites = agent.limits["sites"]
+    if len({site(u) for u in good}) < sites:
+        return (f"Not saved: a story needs articles from at least {sites} different sites, this has "
                 f"{len({site(u) for u in good})} ({', '.join(sorted({site(u) for u in good}))}). Search for the same "
                 "story on another site, read it, then save again with all the addresses.")
     days = {plain(u): d for u, d in (dates or {}).items()}
     known = [days[plain(u)] for u in good if plain(u) in days]
-    if known and max(known) < str(datetime.date.today() - datetime.timedelta(days=FRESH_DAYS)):
+    if known and too_old(max(known)):
         return (f"Not saved: the newest of these articles came out on {max(known)}: that is not news any more. "
                 "Find something from the last days.")
     bad += fronts
@@ -642,6 +678,64 @@ def save_story(agent, a, fetched, saved, say, dates=None):
     if bad:
         note += " Dropped as sources (not read in this hunt, or a front page): " + ", ".join(bad)
     return note
+
+
+def too_old(day):
+    return bool(day) and day < str(datetime.date.today() - datetime.timedelta(days=FRESH_DAYS))
+
+
+def save_lead(agent, a, fetched, results, dates, saved, say):
+    """Carry out save_lead. results: {plain address: (title, snippet)} of the searches in this
+    hunt. Returns what the model is told."""
+    title = " ".join(str(a.get("title", "")).split())
+    why = " ".join(str(a.get("why", "")).split())
+    url = str(a.get("url", "")).strip().strip("<>()[]")
+    if not title or not why or not url:
+        return "Not saved: a lead needs a title, why, and the address."
+    read = {plain(u) for u in fetched}
+    if plain(url) not in read and plain(url) not in results:
+        return ("Not saved: that address was in none of your search results and you didn't read it. Copy the "
+                "address exactly from a result.")
+    if front_page(url):
+        return "Not saved: that is a front page, not an article. Save the article's own address."
+    if plain(url) in seen(agent.id):
+        return "Not saved: the user had this one before. Find another."
+    day = next((d for u, d in dates.items() if plain(u) == plain(url)), "") or web.published("", url)
+    if too_old(day):
+        return f"Not saved: it came out on {day}, that is not news any more."
+    themes = [n for n, _, _ in agent.themes]
+    theme = " ".join(str(a.get("theme", "")).split())
+    theme = next((n for n in themes if n.lower() == theme.lower()), "") or theme or (themes[0] if themes else "")
+    body = why + f"\n\n## Source\n\n1. <{url}>" + (f" (published {day})" if day else "")
+    if plain(url) in read:
+        body += "\n\n*Read by the agent.*"
+    else:
+        rtitle, snippet = results[plain(url)]
+        body += "\n\n*From a search result, not opened by the agent. The result said:* " + \
+            f"**{rtitle}**" + (f" — {snippet}" if snippet else "")
+    stamp = time.strftime("%Y%m%d-%H%M")
+    file = f"{stamp}-{slug(title)}.md"
+    n = 2
+    while os.path.exists(os.path.join(stories_dir(agent.id), file)):
+        file, n = f"{stamp}-{slug(title)}-{n}.md", n + 1
+    Story(agent.id, file, {"title": title, "theme": theme, "teaser": why, "status": "new",
+                           "found": time.strftime("%Y-%m-%d %H:%M"), "agent": agent.name, "kind": "lead"},
+          body).save()
+    remember(agent.id, [url])
+    saved.append(file)
+    say(f"  lead: {title} [{theme}]" + ("" if plain(url) in read else " (from results)"))
+    return f"Saved lead \"{title}\"."
+
+
+def results_of(text):
+    """{plain address: (title, snippet)} from what web_search gave the model."""
+    found = {}
+    for block in text.split("\n\n")[1:]:
+        lines = block.split("\n")
+        if len(lines) >= 2 and lines[1].startswith(("http://", "https://")):
+            title = re.sub(r"^\d+\.\s*", "", lines[0])
+            found[plain(lines[1])] = (title, " ".join(" ".join(lines[2:]).split())[:300])
+    return found
 
 
 def run(agent, say=print, take=False):
@@ -713,6 +807,7 @@ def hunt(agent, persona, launcher, tell, saved, started):
     fetched = set()
     dates = {}
     pages = []      # the addresses read, in order: shown to it when a story is refused
+    results = {}    # what its searches found, for leads
     messages = [{"role": "system", "content": system_prompt(agent, persona)},
                 {"role": "user", "content": "Start the hunt now."}]
     controls = {"style": agent.style, "thinking": agent.thinking}
@@ -734,8 +829,8 @@ def hunt(agent, persona, launcher, tell, saved, started):
             if text["text"].strip():
                 messages.append({"role": "assistant", "content": text["text"]})
             messages.append({"role": "user", "content": "You thought too long and were cut off. Decide now and make "
-                             "your next tool call at once, with little thinking: save_story for a story you have the "
-                             "articles for, or the next search or page."})
+                             "your next tool call at once, with little thinking: save what you have found, or the next "
+                             "search or page."})
             continue
         if not calls:
             line = " ".join(text["text"].split())
@@ -744,9 +839,12 @@ def hunt(agent, persona, launcher, tell, saved, started):
                 tell(f"  answered without a story: {line[:200]}")
                 messages.append({"role": "assistant", "content": text["text"]})
                 messages.append({"role": "user", "content": "You haven't saved a story yet. Search and read some "
-                                 "more and save the best finds with save_story. If there really is nothing, say so in one line."})
+                                 "more and save the best finds with " + ("save_lead" if left["sites"] <= 1 else "save_story")
+                                 + ". If there really is nothing, say so in one line."})
                 continue
             tell(f"Its word: {line[:500]}" if line else f"It ended ({ended}).")
+            if left["sites"] <= 1:
+                return f"{len(saved)} lead{'' if len(saved) == 1 else 's'}"
             return f"{len(saved)} stor{'y' if len(saved) == 1 else 'ies'}"
         messages.append({"role": "assistant", "content": text["text"], "tool_calls": [
             {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
@@ -773,6 +871,7 @@ def hunt(agent, persona, launcher, tell, saved, started):
                     left["searches"] -= 1
                     tell(f"  search: {a.get('query', '')}")
                     result = web.run("web_search", a)
+                    results.update(results_of(result))
             elif c["name"] == "read_web_page":
                 if left["pages"] <= 0:
                     result = "No more pages to read. Save your stories with what you have."
@@ -789,6 +888,15 @@ def hunt(agent, persona, launcher, tell, saved, started):
                                       "source itself.]\n" + result)
                     except (OSError, ValueError, TypeError) as e:
                         result = f"That didn't work: {e}"
+            elif c["name"] == "save_lead":
+                if left["stories"] <= 0:
+                    result = "That's enough leads for this time. Finish with one short line."
+                else:
+                    result = save_lead(agent, a, fetched, results, dates, saved, tell)
+                    if result.startswith("Saved"):
+                        left["stories"] -= 1
+                    else:
+                        tell(f"  refused: {result} ({a.get('url', '')})")
             elif c["name"] == "save_story":
                 if left["stories"] <= 0:
                     result = "That's enough stories for this time. Finish with one short line."
