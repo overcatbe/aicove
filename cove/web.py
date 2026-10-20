@@ -266,10 +266,28 @@ def published(html, url):
     return f"{year}-{int(month):02d}-{int(day):02d}" if 1 <= int(month) <= 12 and 1 <= int(day) <= 31 else ""
 
 
-def read_page(url, part=1, fetched=None, dates=None):
+def links_of(html_text, base):
+    """[(text, absolute address)] of the links on a page that look like articles: a longer path
+    (a slug or several parts), not a menu entry."""
+    found, seen = [], set()
+    for m in re.finditer(r"(?is)<a\b[^>]*?href=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", html_text[:MAX_BYTES]):
+        href = urllib.parse.urljoin(base, m.group(1).strip())
+        text = " ".join(strip_tags(m.group(2)).split())
+        path = urllib.parse.urlsplit(href).path
+        if not href.startswith(("http://", "https://")) or len(text) < 25 or href in seen:
+            continue
+        if len([p for p in path.split("/") if p]) < 2 and len(path) < 25:
+            continue
+        seen.add(href)
+        found.append((text[:160], href))
+    return found
+
+
+def read_page(url, part=1, fetched=None, dates=None, links=None):
     """A page as text for the model. fetched (a set), if given, gets the address asked for and
     the one it ended at when the page could be read; dates (a dict), if given, the day it came
-    out under both addresses (when it says)."""
+    out under both addresses (when it says); links (a list), if given, the article links on it.
+    """
     refusal = why_not(url)
     if refusal:
         return refusal
@@ -286,6 +304,8 @@ def read_page(url, part=1, fetched=None, dates=None):
     day = published(text, final) if kind in ("text/html", "application/xhtml+xml") else ""
     if dates is not None and day:
         dates.update({url: day, final: day})
+    if links is not None and kind in ("text/html", "application/xhtml+xml"):
+        links.extend(links_of(text, final))
     if kind != "text/plain" and kind != "application/json":
         text = strip_tags(text)
     parts = max(1, -(-len(text) // PART))

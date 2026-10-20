@@ -766,9 +766,10 @@ def too_old(day):
     return bool(day) and day < str(datetime.date.today() - datetime.timedelta(days=FRESH_DAYS))
 
 
-def save_lead(agent, a, fetched, results, dates, saved, say):
-    """Carry out save_lead. results: {plain address: (title, snippet)} of the searches in this
-    hunt. Returns what the model is told."""
+def save_lead(agent, a, fetched, results, dates, saved, say, mine=None):
+    """Carry out save_lead. results: {plain address: (title, snippet)} of the searches and the
+    pages' links in this hunt; mine: the addresses saved in this hunt (a digest page may carry
+    several leads). Returns what the model is told."""
     title = " ".join(str(a.get("title", "")).split())
     why = " ".join(str(a.get("why", "")).split())
     url = str(a.get("url", "")).strip().strip("<>()[]")
@@ -779,9 +780,13 @@ def save_lead(agent, a, fetched, results, dates, saved, say):
         return ("Not saved: that address was in none of your search results and you didn't read it. Copy the "
                 "address exactly from a result.")
     if front_page(url):
-        return "Not saved: that is a front page, not an article. Save the article's own address."
-    if plain(url) in seen(agent.id):
+        return ("Not saved: that is a front page, not an article. Save the article's own address: read the front "
+                "page and you get the articles linked on it.")
+    mine = mine if mine is not None else set()
+    if plain(url) in seen(agent.id) and plain(url) not in mine:
         return "Not saved: the user had this one before. Find another."
+    if any(x.title.lower() == title.lower() for x in stories(agent.id) if x.file in saved):
+        return "Not saved: you saved that one already in this hunt."
     day = next((d for u, d in dates.items() if plain(u) == plain(url)), "") or web.published("", url)
     if too_old(day):
         return f"Not saved: it came out on {day}, that is not news any more."
@@ -804,6 +809,7 @@ def save_lead(agent, a, fetched, results, dates, saved, say):
                            "found": time.strftime("%Y-%m-%d %H:%M"), "agent": agent.name, "kind": "lead"},
           body).save()
     remember(agent.id, [url])
+    mine.add(plain(url))
     saved.append(file)
     say(f"  lead: {title} [{theme}]" + ("" if plain(url) in read else " (from results)"))
     return f"Saved lead \"{title}\"."
@@ -1074,7 +1080,8 @@ def work(agent, persona, tell, saved, started, topic=None, cards=None, cards_fil
     fetched = set()
     dates = {}
     pages = []      # the addresses read, in order: shown to it when a story is refused
-    results = {}    # what its searches found, for leads
+    results = {}    # what its searches found, and the links on the pages it read, for leads
+    mine = set()    # the addresses of the leads saved in this hunt
     messages = [{"role": "system", "content": research_prompt(agent, persona, topic) if research
                   else system_prompt(agent, persona)},
                 {"role": "user", "content": "Start the research now." if research else "Start the hunt now."}]
@@ -1164,7 +1171,14 @@ def work(agent, persona, tell, saved, started, topic=None, cards=None, cards_fil
                     tell(f"  read: {a.get('url', '')}")
                     try:
                         url = str(a.get("url", ""))
-                        result = web.read_page(url, a.get("part", 1), fetched, dates)
+                        links = []
+                        result = web.read_page(url, a.get("part", 1), fetched, dates,
+                                               links if not research and left["sites"] <= 1 else None)
+                        if links:
+                            # A digest or front page: its articles may become leads.
+                            results.update({plain(h): (t, "") for t, h in links})
+                            result += "\n\nArticles linked on this page (you may save these as leads):\n" + \
+                                "\n".join(f"- {t}\n  {h}" for t, h in links[:40])
                         if url in fetched and url not in pages and not front_page(url):
                             pages.append(url)
                         if front_page(str(a.get("url", ""))):
@@ -1186,7 +1200,7 @@ def work(agent, persona, tell, saved, started, topic=None, cards=None, cards_fil
                 if left["stories"] <= 0:
                     result = "That's enough leads for this time. Finish with one short line."
                 else:
-                    result = save_lead(agent, a, fetched, results, dates, saved, tell)
+                    result = save_lead(agent, a, fetched, results, dates, saved, tell, mine)
                     if result.startswith("Saved"):
                         left["stories"] -= 1
                     else:
