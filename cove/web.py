@@ -84,7 +84,13 @@ def search(query):
         for r in json.loads(body or b"{}").get("results", [])[:8]:
             rows.append((r.get("title", ""), r.get("url", ""), r.get("content", "")))
     elif "://" in where:
-        _, _, body = get(where.rstrip("/") + "/search?" + urllib.parse.urlencode({"q": query, "format": "json"}))
+        address = where.rstrip("/") + "/search?" + urllib.parse.urlencode({"q": query, "format": "json"})
+        try:
+            _, _, body = get(address)
+        except urllib.error.URLError:
+            if not wake(where):
+                raise
+            _, _, body = get(address)
         for r in json.loads(body).get("results", [])[:8]:
             rows.append((r.get("title", ""), r.get("url", ""), r.get("content", "")))
     else:
@@ -106,6 +112,16 @@ def search(query):
         return f"No results for \"{query}\"."
     return f"Results for \"{query}\":\n\n" + "\n\n".join(
         f"{n}. {t}\n{u}\n{s}" for n, (t, u, s) in enumerate(rows, 1))
+
+
+def wake(where):
+    """When the search address is a tool of yours (Tools tab, like SearXNG) that isn't running:
+    start it. True when it runs now."""
+    from . import tools
+    for t in tools.find_tools():
+        if t.address and t.address.rstrip("/") == where.rstrip("/") and not t.error and t.state() == "stopped":
+            return tools.start(t, say=lambda _: None) == 0
+    return False
 
 
 def wikipedia(query):

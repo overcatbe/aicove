@@ -111,7 +111,7 @@ are turned into text once and kept in `knowledge/.text/`. It works without file 
 **Web** above the input (off/on, per chat) lets the persona search the web and read pages:
 **▸ Searched the web for …** and **▸ Read …** show in the chat. It needs a model that can use
 tools; on one that can't, the menu is greyed out. Searching goes to DuckDuckGo, or to your own
-SearXNG if the `web_search` setting (Settings tab) is its address, e.g. `http://127.0.0.1:8888`.
+SearXNG if the `web_search` setting (Settings tab) is its address, e.g. `http://127.0.0.1:8888`. If that address is a tool of yours (Tools tab) that isn't running, the first search starts it.
 After many searches in a short time DuckDuckGo stops answering for a while; Wikipedia's search
 stands in until then. Pages on this computer or your home network can never be read, also not
 through a redirect, so a model can't reach llama-server or your router this way.
