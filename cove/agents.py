@@ -38,6 +38,9 @@ FRESH_DAYS = 3
 # Front pages and section pages: a place to find articles, never a source.
 FRONT = re.compile(r"/?(?:[a-z]{2}(?:[-_][a-z]{2})?/?)?(?:index\.\w+|home|news|latest|world|politics|science|"
                    r"tech(?:nology)?)?/?", re.IGNORECASE)
+# One step's answer, thinking included, at most this many tokens: a thinking model can go on for
+# 10000 words and the hunt's minutes run out before it saves anything.
+STEP_TOKENS = 4096
 # Of the pages read, the last few stay whole in what the model gets; older ones are cut short.
 WHOLE_PAGES = 3
 CUT_PAGE = 1500
@@ -709,18 +712,31 @@ def hunt(agent, persona, launcher, tell, saved, started):
     left = dict(agent.limits)
     fetched = set()
     dates = {}
+    pages = []      # the addresses read, in order: shown to it when a story is refused
     messages = [{"role": "system", "content": system_prompt(agent, persona)},
                 {"role": "user", "content": "Start the hunt now."}]
     controls = {"style": agent.style, "thinking": agent.thinking}
     nudged = False
+    cut = 0
     while True:
         out_of_time = time.time() - started > agent.limits["minutes"] * 60
         tools = [] if out_of_time or left["steps"] <= 0 else tools_for(left)
         body = chat.request_for(persona, cut_old_pages(messages), controls, tools)
+        body["max_tokens"] = STEP_TOKENS
         text = {"text": "", "thinking": ""}
         ended, calls = chat.stream(body, lambda kind, part: text.__setitem__(kind, text[kind] + part))
         if text["thinking"].strip():
             tell("  (thought " + str(len(text["thinking"].split())) + " words)")
+        if not calls and ended == "length" and tools and cut < 3:
+            cut += 1
+            left["steps"] -= 1
+            tell("  cut off: it thought too long")
+            if text["text"].strip():
+                messages.append({"role": "assistant", "content": text["text"]})
+            messages.append({"role": "user", "content": "You thought too long and were cut off. Decide now and make "
+                             "your next tool call at once, with little thinking: save_story for a story you have the "
+                             "articles for, or the next search or page."})
+            continue
         if not calls:
             line = " ".join(text["text"].split())
             if not saved and not nudged and tools and left["stories"] > 0:
@@ -764,7 +780,10 @@ def hunt(agent, persona, launcher, tell, saved, started):
                     left["pages"] -= 1
                     tell(f"  read: {a.get('url', '')}")
                     try:
-                        result = web.read_page(str(a.get("url", "")), a.get("part", 1), fetched, dates)
+                        url = str(a.get("url", ""))
+                        result = web.read_page(url, a.get("part", 1), fetched, dates)
+                        if url in fetched and url not in pages and not front_page(url):
+                            pages.append(url)
                         if front_page(str(a.get("url", ""))):
                             result = ("[A front page: use it to find articles and open them; it can't be a "
                                       "source itself.]\n" + result)
@@ -778,7 +797,13 @@ def hunt(agent, persona, launcher, tell, saved, started):
                     if result.startswith("Saved"):
                         left["stories"] -= 1
                     else:
-                        tell(f"  refused: {result}")
+                        given = a.get("sources") or []
+                        tell(f"  refused: {result} Sources given: {', '.join(map(str, given)) if isinstance(given, list) else given}")
+                        # Models often leave out an address they did read: show them what they have.
+                        if pages:
+                            result += ("\nThe articles you have read in this hunt (copy the addresses exactly):\n"
+                                       + "\n".join(f"- {u}" + (f" (published {dates[u]})" if u in dates else "")
+                                                    for u in pages))
             else:
                 result = f"There is no tool called {c['name']}."
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": result, "name": c["name"]})
