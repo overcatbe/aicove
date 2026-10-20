@@ -31,6 +31,13 @@ STATUSES = ["new", "kept", "used", "dismissed"]
 LIMITS = {"searches": 15, "pages": 12, "steps": 40, "minutes": 20, "stories": 3}
 LIMIT_WORDS = {"searches": "web searches", "pages": "pages read", "steps": "tool calls in all",
                "minutes": "minutes", "stories": "stories per run"}
+# A story needs pages from this many different sites, and its newest page may be this many days
+# old at most (when the pages say when they came out).
+SITES = 2
+FRESH_DAYS = 3
+# Front pages and section pages: a place to find articles, never a source.
+FRONT = re.compile(r"/?(?:[a-z]{2}(?:[-_][a-z]{2})?/?)?(?:index\.\w+|home|news|latest|world|politics|science|"
+                   r"tech(?:nology)?)?/?", re.IGNORECASE)
 # Of the pages read, the last few stay whole in what the model gets; older ones are cut short.
 WHOLE_PAGES = 3
 CUT_PAGE = 1500
@@ -461,11 +468,15 @@ The themes, and what each means to the user:
 {themes}
 
 How to work:
-- Today is {today}. Search with web_search (at most {searches} searches) and read pages with read_web_page \
-(at most {pages} pages). Search theme by theme; add the month and year to get recent news.
+- Today is {today}; yesterday was {yesterday}. The year is {year}. Search with web_search (at most \
+{searches} searches) and read pages with read_web_page (at most {pages} pages). Search theme by theme, with \
+the date in the search (like "{yesterday_short}") to get recent news.
 - Save every good story with save_story, at most {stories} this time. Only pages you really read with \
 read_web_page count as sources. Never write an address from memory. A list of results, a front page or an \
 index of articles is not a source: open the article itself.
+- A story needs at least {sites} articles from different sites about the same thing: after the first one, \
+search for the same story elsewhere and read it. A story whose newest article is more than {fresh} days old \
+is not news: it is not saved.
 - The article: 3 to 6 paragraphs in your own words, only what the sources say, nothing invented. If the \
 sources disagree, say so. A thin source makes a short article: don't fill it up with general talk.
 - Facts to check: the claims the article stands on, each with the number of its source, like "... [1]".
@@ -487,8 +498,11 @@ The user dismissed these, so less like them:
 def system_prompt(agent, persona):
     themes = "\n".join(f"- {n}: {m}" if m else f"- {n}" for n, m, _ in agent.themes) or "- anything the task names"
     parts = [persona.system.strip() if persona else "", facts.for_prompt(persona.id) if persona else ""]
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
     rules = RULES.format(task=agent.task.strip() or "Find stories for the themes.", themes=themes,
-                         today=time.strftime("%A, %d %B %Y"), **agent.limits)
+                         today=time.strftime("%A, %d %B %Y"), yesterday=yesterday.strftime("%A, %d %B %Y"),
+                         yesterday_short=f"{yesterday.day} {yesterday:%B %Y}", year=datetime.date.today().year,
+                         sites=SITES, fresh=FRESH_DAYS, **agent.limits)
     known = stories(agent.id)
     before = [s for s in known][:30]
     if before:
@@ -549,7 +563,25 @@ def cut_old_pages(messages):
     return out
 
 
-def save_story(agent, a, fetched, saved, say):
+def front_page(url):
+    p = urllib.parse.urlsplit(url.strip())
+    return not p.query and FRONT.fullmatch(p.path or "/") is not None
+
+
+def site(url):
+    host = urllib.parse.urlsplit(url.strip()).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def old_years(query):
+    """The years a search asks for when all of them are before this one (models search with the
+    year they were trained in), else []."""
+    years = [int(y) for y in re.findall(r"\b(?:19|20)\d\d\b", query)]
+    this = datetime.date.today().year
+    return years if years and all(y < this for y in years) else []
+
+
+def save_story(agent, a, fetched, saved, say, dates=None):
     """Carry out save_story. Returns what the model is told."""
     title = " ".join(str(a.get("title", "")).split())
     article = str(a.get("article", "")).strip()
@@ -567,6 +599,21 @@ def save_story(agent, a, fetched, saved, say):
     if not good:
         return ("Not saved: none of these sources is a page you read with read_web_page in this hunt. "
                 "Read the pages first, then save the story with their addresses.")
+    fronts = [u for u in good if front_page(u)]
+    good = [u for u in good if not front_page(u)]
+    if not good:
+        return ("Not saved: " + ", ".join(fronts) + " is a front page, not an article. Open the article itself "
+                "with read_web_page and save the story with its address.")
+    if len({site(u) for u in good}) < SITES:
+        return (f"Not saved: a story needs articles from at least {SITES} different sites, this has "
+                f"{len({site(u) for u in good})} ({', '.join(sorted({site(u) for u in good}))}). Search for the same "
+                "story on another site, read it, then save again with all the addresses.")
+    days = {plain(u): d for u, d in (dates or {}).items()}
+    known = [days[plain(u)] for u in good if plain(u) in days]
+    if known and max(known) < str(datetime.date.today() - datetime.timedelta(days=FRESH_DAYS)):
+        return (f"Not saved: the newest of these articles came out on {max(known)}: that is not news any more. "
+                "Find something from the last days.")
+    bad += fronts
     before = seen(agent.id)
     if all(plain(u) in before for u in good):
         return "Not saved: this was reported before (same sources). Find another story."
@@ -587,10 +634,10 @@ def save_story(agent, a, fetched, saved, say):
                            "agent": agent.name}, body).save()
     remember(agent.id, good)
     saved.append(file)
-    say(f"  saved: {title} [{theme}] ({len(good)} sources" + (f", {len(bad)} unread dropped" if bad else "") + ")")
+    say(f"  saved: {title} [{theme}] ({len(good)} sources" + (f", {len(bad)} dropped" if bad else "") + ")")
     note = f"Saved as \"{title}\"."
     if bad:
-        note += " Dropped as sources (not read in this hunt): " + ", ".join(bad)
+        note += " Dropped as sources (not read in this hunt, or a front page): " + ", ".join(bad)
     return note
 
 
@@ -661,6 +708,7 @@ def run(agent, say=print, take=False):
 def hunt(agent, persona, launcher, tell, saved, started):
     left = dict(agent.limits)
     fetched = set()
+    dates = {}
     messages = [{"role": "system", "content": system_prompt(agent, persona)},
                 {"role": "user", "content": "Start the hunt now."}]
     controls = {"style": agent.style, "thinking": agent.thinking}
@@ -698,8 +746,13 @@ def hunt(agent, persona, launcher, tell, saved, started):
             if a is None:
                 result = "The arguments were not valid JSON. Call the tool again with proper arguments."
             elif c["name"] == "web_search":
+                query = str(a.get("query", ""))
                 if left["searches"] <= 0:
                     result = "No searches left. Read what you found, or save your stories."
+                elif old_years(query):
+                    tell(f"  sent back: {query} (old year)")
+                    result = (f"Not searched: it is {datetime.date.today().year} now, not "
+                              f"{', '.join(map(str, old_years(query)))}. Search again with the right date.")
                 else:
                     left["searches"] -= 1
                     tell(f"  search: {a.get('query', '')}")
@@ -711,14 +764,17 @@ def hunt(agent, persona, launcher, tell, saved, started):
                     left["pages"] -= 1
                     tell(f"  read: {a.get('url', '')}")
                     try:
-                        result = web.read_page(str(a.get("url", "")), a.get("part", 1), fetched)
+                        result = web.read_page(str(a.get("url", "")), a.get("part", 1), fetched, dates)
+                        if front_page(str(a.get("url", ""))):
+                            result = ("[A front page: use it to find articles and open them; it can't be a "
+                                      "source itself.]\n" + result)
                     except (OSError, ValueError, TypeError) as e:
                         result = f"That didn't work: {e}"
             elif c["name"] == "save_story":
                 if left["stories"] <= 0:
                     result = "That's enough stories for this time. Finish with one short line."
                 else:
-                    result = save_story(agent, a, fetched, saved, tell)
+                    result = save_story(agent, a, fetched, saved, tell, dates)
                     if result.startswith("Saved"):
                         left["stories"] -= 1
                     else:

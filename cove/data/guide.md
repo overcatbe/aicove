@@ -172,6 +172,14 @@ source.
 - **Themes**, one per line: `Name | what it means to you | persona to work on it with`.
 - **Task**: what it should do, in words.
 
+A story is only saved when it stands on real articles: pages the agent read in that run, from at
+least two different sites, no front pages (a front page only helps find articles), and not
+older than 3 days when the pages say when they came out. A search for an old year ("October
+2024": models like the year they were trained in) is sent back. The agent is told today's and
+yesterday's date. For finding stories a persona with a plain or no prompt works best: a
+brainstorming persona invents angles and critics; let it work on the story afterwards (the
+theme's persona, **Work on it…**).
+
 An agent may search the web and read pages, and save its reports in its own folder. Nothing
 else: no files of yours, no commands. Runs go on when the window is closed; **Stop** ends one.
 The last run's log is under the form. Small models are weak at long chains of searching and
