@@ -163,7 +163,7 @@ class ArticlesDialog(QDialog):
         self.count.setValue(3)
         form.addRow("How many", self.count)
         self.wish = QLineEdit()
-        self.wish.setPlaceholderText("optional: in German, about 800 words, for Night Owl Wire…")
+        self.wish.setPlaceholderText("optional: in German, about 800 words, for my blog…")
         form.addRow("Wishes", self.wish)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
