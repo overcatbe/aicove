@@ -2867,7 +2867,7 @@ class Window(QMainWindow):
         if not self.p_target or self.persona is None:
             return None, {}
         for who, found in profiles.others(self.persona.id).items():
-            # Here "omen-qwen36" is the Omen's "qwen36".
+            # Here "laptop-qwen36" is that machine's "qwen36" (the host's name in front).
             names = [self.p_target] + ([self.p_target[len(who) + 1:]] if self.p_target.startswith(who + "-") else [])
             for name in names:
                 if found.get(name, {}).get("samplers"):
@@ -3760,7 +3760,7 @@ class Window(QMainWindow):
             if self.chat_tab.measuring is not None:
                 self.chat_tab.measuring.wait(3000)   # a thread still running when the window goes ends the program badly
             if sync.synced(settings.COVE_DIR):
-                # The last changes go out on their own, so closing doesn't wait for vlgr.
+                # The last changes go out on their own, so closing doesn't wait for the remote.
                 subprocess.Popen(cove_cmd("sync"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
             event.accept()
