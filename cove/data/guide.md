@@ -363,6 +363,14 @@ A persona is a name, a picture, a prompt and a few settings, tied to the launche
 - **Settings for this persona** (Thinking, Max answer length, temperature and so on) apply
   whenever the persona is used. Who wins: the persona, then the launcher, then llama-server's
   default.
+- **Settings for:** picks whose settings the fields show: *All models* (the persona's own), or
+  one model, where ticked ones win over the persona's own when it runs on that model. A model
+  is listed at the top once the persona has answered on it, with the day it last did. These
+  are kept per machine (`personas/<id>/models/<machine>.toml`); what another machine set for
+  the model is shown below, and **Take these** copies it here. *not here now* means the
+  launcher is gone or its machine is off; its settings stay until you forget them.
+  **Forget this model** drops one, **Clean up…** those the persona hasn't run on here for
+  30 days (both on Save). Deleting a launcher asks whether its settings go too.
 - Give every persona a **Max answer length**. Without one, a model that starts repeating itself
   writes until the context is full.
 - **Export…** saves a persona as one `.zip`: to keep, to move to another machine, or to give
