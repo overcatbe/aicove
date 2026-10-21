@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import fetch, personas, server, settings, sync, tools, voice
+from . import fetch, personas, profiles, server, settings, sync, tools, voice
 from . import launchers as launcher_files
 from .gui_chat import FACE_SIZE, ChatTab, face
 from .gui_agents import AgentsTab
@@ -2416,9 +2416,35 @@ class Window(QMainWindow):
         hint.setEnabled(False)
         picture.addWidget(hint, 1)
         # Same fields as the launcher's writing style, two side by side to leave room for the prompt.
-        samplers = QGroupBox("Settings for this persona — ticked ones win over the launcher's, "
-                             "on any model")
+        samplers = QGroupBox("Settings for this persona")
         sgrid = QGridLayout(samplers)
+        # Which settings the fields show: the persona's own (every model), or what differs on one
+        # model on this machine (profiles.py).
+        self.p_base, self.p_prof, self.p_used, self.p_forgotten = {}, {}, {}, set()
+        self.p_target, self.p_switching = "", False
+        self.p_profile = Combo()
+        self.p_profile.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.p_profile.setToolTip("All models: the persona's own settings. A model: what is different when "
+                                  "it runs on that one, on this machine")
+        self.p_profile.currentIndexChanged.connect(self.switch_profile)
+        self.p_forget_btn = QPushButton("Forget this model")
+        self.p_forget_btn.setToolTip("Remove this model's settings for the persona (on Save)")
+        self.p_forget_btn.clicked.connect(self.forget_profile)
+        self.p_take_btn = QPushButton("Take these")
+        self.p_take_btn.setToolTip("Use the other machine's settings for this model here")
+        self.p_take_btn.clicked.connect(self.take_profile)
+        self.p_profile_info = QLabel()
+        self.p_profile_info.setWordWrap(True)
+        self.p_profile_info.setEnabled(False)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Settings for:"))
+        profile_row.addWidget(self.p_profile, 1)
+        profile_row.addWidget(self.p_forget_btn)
+        sgrid.addLayout(profile_row, 0, 0, 1, 6)
+        info_row = QHBoxLayout()
+        info_row.addWidget(self.p_profile_info, 1)
+        info_row.addWidget(self.p_take_btn)
+        sgrid.addLayout(info_row, 1, 0, 1, 6)
         presets = QHBoxLayout()
         presets.addWidget(QLabel("Writing style at once:"))
         for name in PRESETS:
@@ -2426,7 +2452,7 @@ class Window(QMainWindow):
             b.clicked.connect(lambda _, n=name: self.apply_persona_preset(n))
             presets.addWidget(b)
         presets.addStretch(1)
-        sgrid.addLayout(presets, 0, 0, 1, 5)
+        sgrid.addLayout(presets, 2, 0, 1, 5)
         sgrid.setColumnMinimumWidth(2, 30)
         sgrid.setColumnStretch(5, 1)
         self.p_rows = {}
@@ -2439,8 +2465,8 @@ class Window(QMainWindow):
             row.widget.setToolTip(spec["hint"])
             row.widget.setMinimumWidth(110)
             self.p_rows[keys[spec["flag"]]] = row
-            sgrid.addWidget(row.check, 1 + i % half, 3 * (i // half))
-            sgrid.addWidget(row.widget, 1 + i % half, 3 * (i // half) + 1)
+            sgrid.addWidget(row.check, 3 + i % half, 3 * (i // half))
+            sgrid.addWidget(row.widget, 3 + i % half, 3 * (i // half) + 1)
         note = QLabel(
             "Start loads this persona's model. To talk to it, use the Chat tab, which loads the "
             "model by itself when needed.")
@@ -2553,6 +2579,7 @@ class Window(QMainWindow):
         self.p_launcher.setCurrentIndex(max(self.p_launcher.findData(wanted), 0))
         self.p_files.setCurrentIndex(max(self.p_files.findData(persona.files if persona else ""), 0))
         self.p_others = tuple(persona.models[1:]) if persona else ()
+        self.load_profiles(persona)
         self.fill_voices(persona.voice if persona else "")
         self.persona = persona
         # To notice at Save that the file was changed behind the form (a sync, an editor).
@@ -2585,7 +2612,7 @@ class Window(QMainWindow):
 
     def persona_state(self):
         return (self.p_name.text().strip(), self.p_system.toPlainText().strip(),
-                tuple((k, r.get()) for k, r in self.p_rows.items()), self.p_picture,
+                self.samplers_state(), self.p_picture,
                 self.p_launcher.currentData() or "", self.p_files.currentData() or "", self.p_others,
                 self.p_voice.currentData() or "")
 
@@ -2746,6 +2773,115 @@ class Window(QMainWindow):
             self.p_rows[key].set(PRESETS[name].get(flag))
         self.persona_changed()
 
+    # --- its settings per model (profiles.py) -------------------------------------------
+
+    def load_profiles(self, persona):
+        """Fill the per-model part from the file, showing the persona's own settings."""
+        self.p_base = {k: r.get() for k, r in self.p_rows.items() if r.get() is not None}
+        found = profiles.read(persona.id) if persona else {}
+        self.p_prof = {l: dict(e["samplers"]) for l, e in found.items()}
+        self.p_used = {l: e["used"] for l, e in found.items()}
+        self.p_forgotten = set()
+        self.p_target = ""
+        self.fill_profiles()
+        self.show_profile_info()
+
+    def fill_profiles(self):
+        """All models first, then the models it has run on or has settings for (last used first),
+        then the other launchers."""
+        self.p_switching = True
+        self.p_profile.clear()
+        self.p_profile.addItem("All models: the persona's own settings", "")
+        known = sorted(set(self.p_prof) | set(self.p_used), key=lambda l: (self.p_used.get(l, ""), l), reverse=True)
+        for l in known:
+            bits = ([f"used {self.p_used[l]}"] if self.p_used.get(l) else []) \
+                + ([f"{len(self.p_prof[l])} own setting{'s' if len(self.p_prof[l]) != 1 else ''}"]
+                   if self.p_prof.get(l) else [])
+            self.p_profile.addItem(f"{l}  ·  {', '.join(bits) or 'as the persona'}", l)
+        rest = [l for l in self.p_launchers if l not in known]
+        if rest:
+            self.p_profile.insertSeparator(self.p_profile.count())
+            for l in rest:
+                self.p_profile.addItem(l, l)
+        self.p_profile.setCurrentIndex(max(self.p_profile.findData(self.p_target), 0))
+        self.p_switching = False
+
+    def flush_rows(self):
+        """What the fields say now, into the settings they show."""
+        values = {k: r.get() for k, r in self.p_rows.items() if r.get() is not None}
+        if not self.p_target:
+            self.p_base = values
+        elif values or self.p_target in self.p_prof:
+            self.p_prof[self.p_target] = values
+
+    def samplers_state(self):
+        if not self.p_switching:
+            self.flush_rows()
+        return (tuple(sorted(self.p_base.items())),
+                tuple(sorted((l, tuple(sorted(v.items()))) for l, v in self.p_prof.items() if v)),
+                tuple(sorted(self.p_forgotten)))
+
+    def show_rows(self, values):
+        self.p_switching = True
+        for key, row in self.p_rows.items():
+            row.set(values.get(key))
+        self.p_switching = False
+
+    def switch_profile(self, *_):
+        if self.p_switching or self.persona is None:
+            return
+        self.flush_rows()
+        self.p_target = self.p_profile.currentData() or ""
+        self.show_rows(self.p_prof.get(self.p_target, {}) if self.p_target else self.p_base)
+        self.show_profile_info()
+        self.persona_changed()
+
+    def other_profile(self):
+        """(machine, settings) of another machine for the shown model, or (None, {})."""
+        if not self.p_target or self.persona is None:
+            return None, {}
+        for who, found in profiles.others(self.persona.id).items():
+            # Here "omen-qwen36" is the Omen's "qwen36".
+            names = [self.p_target] + ([self.p_target[len(who) + 1:]] if self.p_target.startswith(who + "-") else [])
+            for name in names:
+                if found.get(name, {}).get("samplers"):
+                    return who, found[name]["samplers"]
+        return None, {}
+
+    def show_profile_info(self):
+        if not self.p_target:
+            text = ("Ticked ones win over the launcher's, on every model. Pick a model above to set "
+                    "what is different on that one.")
+        else:
+            text = (f"On {self.p_target}: ticked ones win over the persona's own settings; unticked = "
+                    f"as the persona's. Kept for {profiles.machine()} only.")
+        who, theirs = self.other_profile()
+        if who:
+            text += f"\nOn {who}: " + ", ".join(f"{k} {v}" for k, v in sorted(theirs.items()))
+        self.p_profile_info.setText(text)
+        self.p_take_btn.setVisible(bool(who))
+        self.p_forget_btn.setEnabled(bool(self.p_target) and
+                                     (self.p_target in self.p_prof or self.p_target in self.p_used))
+
+    def forget_profile(self):
+        if not self.p_target:
+            return
+        self.p_prof.pop(self.p_target, None)
+        self.p_used.pop(self.p_target, None)
+        self.p_forgotten.add(self.p_target)
+        self.show_rows({})
+        self.fill_profiles()
+        self.show_profile_info()
+        self.persona_changed()
+
+    def take_profile(self):
+        who, theirs = self.other_profile()
+        if who:
+            self.show_rows(theirs)
+            self.flush_rows()
+            self.show_profile_info()
+            self.persona_changed()
+
     def persona_dirty(self):
         return self.persona is not None and self.persona_state() != self.p_baseline
 
@@ -2867,9 +3003,11 @@ class Window(QMainWindow):
         self.persona.models = [launcher] + [o for o in others if o != launcher] if launcher else []
         self.persona.files = files
         self.persona.voice = voice_
-        self.persona.samplers = {k: v for k, v in samplers if v is not None}
+        self.persona.samplers = dict(samplers[0])
         try:
             self.persona.write()
+            profiles.save_samplers(self.persona.id, {l: v for l, v in self.p_prof.items() if v or l in self.p_used},
+                                   self.p_forgotten)
             if picture:
                 personas.set_picture(self.persona.id, picture)
             elif picture is not None:
@@ -2880,6 +3018,7 @@ class Window(QMainWindow):
         self.say(f"Saved persona {self.persona.id}")
         self.p_seen = self.persona_stamp()
         self.p_picture = None
+        self.p_forgotten = set()
         self.p_baseline = self.persona_state()
         self.reload_personas()
         return True

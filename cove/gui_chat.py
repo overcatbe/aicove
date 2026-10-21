@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMenu, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import bestof, chat, facts, knowledge, launchers, personas, pictures, server, settings, summary, voice
+from . import bestof, chat, facts, knowledge, launchers, personas, pictures, profiles, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -719,12 +719,15 @@ class ChatTab(QWidget):
         self.face.setPixmap(pixmap)
 
     def fill_models(self, keep=False):
-        """Every launcher: the persona's own first, then a line, then the others (this machine's,
+        """Every launcher: the persona's own first (its models, then those it ran on here), then a line, then the others (this machine's,
         then those of other machines). Picking one only changes this chat's model, never the
         persona. keep: what was picked stays (the same persona's list filled again); else what is
         loaded; else the persona's first."""
         here = {l.name: l for l in launchers.find_launchers() if not l.error}
         own = [n for n in self.persona.models if n in here]
+        # Then the ones it has run on here (profiles.py), the last used first.
+        ran = profiles.read(self.persona.id)
+        own += [n for n in sorted(ran, key=lambda n: ran[n]["used"], reverse=True) if n in here and n not in own]
         others = sorted((n for n in here if n not in own), key=lambda n: (bool(here[n].host), n.lower()))
         loaded = chat.loaded_launcher()
         picked = self.model.currentData() if keep else None

@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import facts, files, knowledge, launchers, personas, pictures, server, summary, voice, web
+from . import facts, files, knowledge, launchers, personas, pictures, profiles, server, summary, voice, web
 from .settings import S
 
 CHAT_ID = re.compile(r"\d{8}-\d{6}(-\d+)?")
@@ -222,15 +222,17 @@ def request_for(persona, messages, controls=None, tools=()):
     """The body for llama-server's /v1/chat/completions: the persona's settings, then the
     chat's controls over them."""
     body = {"messages": messages, "stream": True}
+    loaded = loaded_launcher()
+    samplers = profiles.samplers_for(persona, loaded.name if loaded else "")
     for key in SENT:
-        if key in persona.samplers:
-            value = persona.samplers[key]
+        if key in samplers:
+            value = samplers[key]
             body[key] = int(value) if key in personas.WHOLE else float(value)
     controls = controls or {}
     body.update(STYLES.get(controls.get("style"), {}))
     if controls.get("length") in LENGTHS:
         body["max_tokens"] = LENGTHS[controls["length"]]
-    thinking = controls.get("thinking") or persona.samplers.get("thinking")
+    thinking = controls.get("thinking") or samplers.get("thinking")
     if thinking in ("on", "off"):
         body["chat_template_kwargs"] = {"enable_thinking": thinking == "on"}
     if tools:
@@ -399,6 +401,11 @@ def reply(persona, chat, on_part, stop=lambda: False, ask=None):
     gets "thinking" and "text" pieces, and ("round", "") when a new round after tools starts.
     Returns the last new message."""
     launcher = loaded_launcher()
+    if launcher is not None:
+        try:
+            profiles.used(persona.id, launcher.name)
+        except OSError:
+            pass
     message = None
     for round_ in range(MAX_ROUNDS + 1):
         system, tools = setup(persona, chat)
