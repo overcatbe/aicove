@@ -112,3 +112,25 @@ def save_samplers(pid, wanted, forgotten=()):
         found[name] = {"used": found.get(name, {}).get("used", ""), "samplers": dict(samplers)}
     if found or os.path.exists(path(pid)):
         write(pid, found)
+
+
+def holders(launcher):
+    """{persona id: its own settings} of the personas that have that launcher on this machine."""
+    found = {}
+    for pid in personas.load_all():
+        entry = read(pid).get(launcher)
+        if entry is not None:
+            found[pid] = entry["samplers"]
+    return found
+
+
+def drop(launcher):
+    """The launcher is gone: remove it from every persona's file of this machine."""
+    for pid in holders(launcher):
+        save_samplers(pid, {}, [launcher])
+
+
+def stale(found, days=30):
+    """The launchers in read()'s result not used for that many days (or never)."""
+    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
+    return sorted(l for l, e in found.items() if e.get("used", "") < since)

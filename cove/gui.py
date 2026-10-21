@@ -23,7 +23,7 @@ import zlib
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QObject, QProcess, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
@@ -2120,6 +2120,7 @@ class Window(QMainWindow):
             launcher_files.skip_remote(self.launcher)
             self.say(f"It won't come back from {self.launcher.host} (unless you add {self.launcher.host} again "
                      "with \"From another machine…\").")
+        self.drop_profiles(self.launcher.name)
         if drop_files:
             for f in own:
                 try:
@@ -2436,6 +2437,9 @@ class Window(QMainWindow):
         self.p_forget_btn = QPushButton("Forget this model")
         self.p_forget_btn.setToolTip("Remove this model's settings for the persona (on Save)")
         self.p_forget_btn.clicked.connect(self.forget_profile)
+        self.p_clean_btn = QPushButton("Clean up…")
+        self.p_clean_btn.setToolTip("Forget the models this persona hasn't run on here for 30 days (on Save)")
+        self.p_clean_btn.clicked.connect(self.clean_profiles)
         self.p_take_btn = QPushButton("Take these")
         self.p_take_btn.setToolTip("Use the other machine's settings for this model here")
         self.p_take_btn.clicked.connect(self.take_profile)
@@ -2446,6 +2450,7 @@ class Window(QMainWindow):
         profile_row.addWidget(QLabel("Settings for:"))
         profile_row.addWidget(self.p_profile, 1)
         profile_row.addWidget(self.p_forget_btn)
+        profile_row.addWidget(self.p_clean_btn)
         sgrid.addLayout(profile_row, 0, 0, 1, 6)
         info_row = QHBoxLayout()
         info_row.addWidget(self.p_profile_info, 1)
@@ -2808,7 +2813,13 @@ class Window(QMainWindow):
             bits = ([f"used {self.p_used[l]}"] if self.p_used.get(l) else []) \
                 + ([f"{len(self.p_prof[l])} own setting{'s' if len(self.p_prof[l]) != 1 else ''}"]
                    if self.p_prof.get(l) else [])
+            if l not in self.p_launchers:
+                # Gone, or its machine is off: greyed, kept until forgotten.
+                bits.append("not here now")
             self.p_profile.addItem(f"{l}  ·  {', '.join(bits) or 'as the persona'}", l)
+            if l not in self.p_launchers:
+                self.p_profile.setItemData(self.p_profile.count() - 1, QBrush(self.palette().color(
+                    QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)), Qt.ItemDataRole.ForegroundRole)
         rest = [l for l in self.p_launchers if l not in known]
         if rest:
             self.p_profile.insertSeparator(self.p_profile.count())
@@ -2873,6 +2884,7 @@ class Window(QMainWindow):
         self.p_take_btn.setVisible(bool(who))
         self.p_forget_btn.setEnabled(bool(self.p_target) and
                                      (self.p_target in self.p_prof or self.p_target in self.p_used))
+        self.p_clean_btn.setEnabled(self.persona is not None and bool(self.p_prof or self.p_used))
 
     def forget_profile(self):
         if not self.p_target:
@@ -2884,6 +2896,64 @@ class Window(QMainWindow):
         self.fill_profiles()
         self.show_profile_info()
         self.persona_changed()
+
+    def clean_profiles(self):
+        old = profiles.stale({l: {"used": self.p_used.get(l, "")} for l in set(self.p_prof) | set(self.p_used)})
+        if not old:
+            QMessageBox.information(self, "Clean up", "Nothing to clean up: it ran on each of its models "
+                                    "in the last 30 days.")
+            return
+        lines = [f"{l}: {'used ' + self.p_used[l] if self.p_used.get(l) else 'never used'}"
+                 + (", has its own settings" if self.p_prof.get(l) else "") for l in old]
+        if QMessageBox.question(
+                self, "Clean up", f"{self.persona.name} hasn't run on these here for 30 days:\n\n"
+                + "\n".join(lines) + "\n\nForget them? (On Save; the other machines' files stay.)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.flush_rows()
+        for l in old:
+            self.p_prof.pop(l, None)
+            self.p_used.pop(l, None)
+            self.p_forgotten.add(l)
+        if self.p_target in old:
+            self.p_target = ""
+            self.show_rows(self.p_base)
+        self.fill_profiles()
+        self.show_profile_info()
+        self.persona_changed()
+
+    def drop_profiles(self, name):
+        """A launcher was deleted: offer to delete the personas' settings for it on this machine."""
+        held = profiles.holders(name)
+        own = [personas.load_all()[pid].name or pid for pid, s in held.items() if s]
+        if own and QMessageBox.question(
+                self, "Delete launcher", f"{', '.join(own)} {'has' if len(own) == 1 else 'have'} own settings "
+                f"for {name} on this machine. Delete those too?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            profiles.drop(name)
+        except OSError as e:
+            self.say(f"Can't delete the personas' settings for {name}: {e}")
+            return
+        if held:
+            self.say(f"Deleted the personas' settings for {name}")
+        # The open form must not write it back at its next Save.
+        if self.persona is not None and (name in self.p_prof or name in self.p_used):
+            clean = not self.persona_dirty()
+            self.flush_rows()
+            self.p_prof.pop(name, None)
+            self.p_used.pop(name, None)
+            if self.p_target == name:
+                self.p_target = ""
+                self.show_rows(self.p_base)
+            self.fill_profiles()
+            self.show_profile_info()
+            if clean:
+                self.p_baseline = self.persona_state()
+            self.persona_changed()
 
     def take_profile(self):
         who, theirs = self.other_profile()
