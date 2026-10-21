@@ -1680,12 +1680,18 @@ class Window(QMainWindow):
     def on_select(self, cur, prev):
         if self.switching or cur is None:
             return
-        if prev is not None and self.launcher is not None and self.dirty() and not self.resolve_unsaved():
-            self.switching = True
-            self.list.setCurrentItem(prev)
-            self.switching = False
+        wanted = cur.data(Qt.ItemDataRole.UserRole)
+        if prev is not None and self.launcher is not None and self.dirty():
+            if not self.resolve_unsaved():
+                self.switching = True
+                self.list.setCurrentItem(prev)
+                self.switching = False
+                return
+            # Saving fills the list again, which deletes cur and picks the saved one: pick the
+            # wanted one in the new list.
+            self.reload_list(select=wanted.name)
             return
-        self.load(cur.data(Qt.ItemDataRole.UserRole))
+        self.load(wanted)
 
     def load(self, launcher):
         self.loading = True
@@ -2554,13 +2560,18 @@ class Window(QMainWindow):
     def on_persona_select(self, cur, prev):
         if self.p_switching or cur is None:
             return
-        if prev is not None and self.persona_dirty() \
-                and not self.resolve_unsaved(self.persona.name, self.save_persona):
-            self.p_switching = True
-            self.p_list.setCurrentItem(prev)
-            self.p_switching = False
+        wanted = cur.data(Qt.ItemDataRole.UserRole)
+        if prev is not None and self.persona_dirty():
+            if not self.resolve_unsaved(self.persona.name, self.save_persona):
+                self.p_switching = True
+                self.p_list.setCurrentItem(prev)
+                self.p_switching = False
+                return
+            # Saving fills the list again, which deletes cur and picks the saved persona again (the
+            # form stayed on it, so the next Save went to it): pick the wanted one in the new list.
+            self.reload_personas(select=wanted.id)
             return
-        self.load_persona(cur.data(Qt.ItemDataRole.UserRole))
+        self.load_persona(wanted)
 
     def load_persona(self, persona):
         self.persona = None
