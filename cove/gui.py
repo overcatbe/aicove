@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import fetch, personas, server, settings, tools, voice
+from . import fetch, personas, server, settings, sync, tools, voice
 from . import launchers as launcher_files
 from .gui_chat import FACE_SIZE, ChatTab, face
 from .gui_agents import AgentsTab
@@ -694,6 +694,37 @@ class Follow(QObject):
                 self.news.emit(host, added, removed, True)
         self.asking = False
         self.done.emit(off)
+
+
+class Syncer(QObject):
+    """Keeps the AIcove folder and its stories in step with the other machines (sync.py): when
+    the window opens, on "Update from other machines", and once what changed here has been left
+    alone for a minute. A plain thread like Follow; the result reaches the window as a signal."""
+    done = pyqtSignal(list, list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.busy = False
+        self.last = ""
+
+    def start(self, force=True):
+        if not self.busy:
+            self.busy = True
+            threading.Thread(target=self.run, args=(force,), daemon=True).start()
+
+    def run(self, force):
+        lines, changed = [], []
+        try:
+            now = sync.pending()
+            # Unforced: only once the same changes have stood for a whole round.
+            if force or (now and now == self.last):
+                lines, changed = sync.sync()
+                now = sync.pending()
+            self.last = now
+        except Exception as e:
+            lines = [f"Sync: {e}"]
+        self.busy = False
+        self.done.emit(lines, changed)
 
 
 class NoWheel:
@@ -1478,6 +1509,8 @@ class Window(QMainWindow):
         self.follow = Follow(self)
         self.follow.news.connect(self.follow_done)
         self.follow.done.connect(self.follow_finished)
+        self.syncer = Syncer(self)
+        self.syncer.done.connect(self.synced)
 
         central = QWidget()
         cbox = QVBoxLayout(central)
@@ -1501,6 +1534,10 @@ class Window(QMainWindow):
 
         self.reload_list()
         self.follow.start()
+        self.syncer.start()
+        self.sync_timer = QTimer(self)
+        self.sync_timer.timeout.connect(lambda: self.syncer.start(force=False))
+        self.sync_timer.start(60000)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
@@ -1858,6 +1895,7 @@ class Window(QMainWindow):
                      + ", ".join(removed))
 
     def update_remote(self):
+        self.syncer.start()
         if not launcher_files.hosts():
             QMessageBox.information(self, "Update", "No launchers of another machine yet: "
                                     "add one with \"From another machine…\".")
@@ -1865,6 +1903,19 @@ class Window(QMainWindow):
         self.update_btn.setEnabled(False)
         self.say(f"Asking {', '.join(launcher_files.hosts())}...")
         self.follow.start()
+
+    def synced(self, lines, changed):
+        """A sync is done: say what happened, and show what the other machines changed."""
+        for line in lines:
+            self.say(line)
+        if not changed:
+            return
+        if not self.persona_dirty():
+            self.reload_personas(select=self.persona.id if self.persona else None)
+        if not self.chat_tab.worker:
+            self.chat_tab.reload()
+        if not self.agents_tab.dirty():
+            self.agents_tab.reload()
 
     def follow_finished(self, off):
         if not self.update_btn.isEnabled():
@@ -3467,6 +3518,10 @@ class Window(QMainWindow):
         else:
             if self.chat_tab.measuring is not None:
                 self.chat_tab.measuring.wait(3000)   # a thread still running when the window goes ends the program badly
+            if sync.synced(settings.COVE_DIR):
+                # The last changes go out on their own, so closing doesn't wait for vlgr.
+                subprocess.Popen(cove_cmd("sync"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
             event.accept()
 
 
