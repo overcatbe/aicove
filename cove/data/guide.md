@@ -99,6 +99,10 @@ starts with *as set*.
 - **Thinking**: *on* or *off* for thinking models (off answers quicker). Greyed out when the
   model's thinking can't be switched.
 - **Length**: the longest an answer may get: short, medium or long.
+- **Keep for <model>** (shown when one of these three isn't *as set*): makes them the
+  persona's settings on the picked model, on this machine, so every chat with it on that model
+  gets them; the menus go back to *as set*. They show up on the Personas tab under
+  **Settings for:**.
 
 **Knowledge** is material a persona works from: notes, lore, books. Put the files into its
 `knowledge/` folder (**Knowledge…** at the top of the chat opens it; the button shows how many

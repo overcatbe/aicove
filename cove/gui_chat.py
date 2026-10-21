@@ -617,6 +617,12 @@ class ChatTab(QWidget):
             knobs.addWidget(combo)
             knobs.addSpacing(12)
             self.controls[key] = combo
+        self.keep_btn = QPushButton()
+        self.keep_btn.setToolTip("Make this chat's Style, Thinking and Length the persona's settings on this "
+                                 "model (here, on this machine); the menus go back to \"as set\"")
+        self.keep_btn.clicked.connect(self.keep_for_model)
+        self.keep_btn.hide()
+        knobs.addWidget(self.keep_btn)
         knobs.addStretch(1)
         self.meter = QProgressBar()
         self.meter.setFixedWidth(230)
@@ -821,9 +827,11 @@ class ChatTab(QWidget):
             combo.setCurrentIndex(max(combo.findData(values.get(key, "")), 0))
             combo.blockSignals(False)
         self.new_controls = {}
+        self.show_keep()
 
     def on_control(self, key):
         value = self.controls[key].currentData()
+        self.show_keep()
         if self.chat is None:
             # Kept for the chat the next message starts.
             self.new_controls[key] = value
@@ -856,6 +864,39 @@ class ChatTab(QWidget):
         combo.setEnabled(can is not False)
         combo.setToolTip("Whether a thinking model thinks before it answers. Off is quicker." if can is not False
                          else "This model's thinking can't be switched on or off.")
+        self.show_keep()
+
+    KEPT = ("style", "thinking", "length")
+
+    def show_keep(self):
+        name = self.model.currentData() or ""
+        self.keep_btn.setText(f"Keep for {name}")
+        self.keep_btn.setVisible(bool(self.persona and name and any(self.controls[k].currentData() for k in self.KEPT)))
+
+    def keep_for_model(self):
+        """The chat's Style, Thinking and Length become the persona's settings on the picked model
+        (profiles.py, this machine's file)."""
+        name = self.model.currentData() or ""
+        if not (self.persona and name):
+            return
+        wanted = dict(chat.STYLES.get(self.controls["style"].currentData(), {}))
+        if self.controls["length"].currentData() in chat.LENGTHS:
+            wanted["max_tokens"] = chat.LENGTHS[self.controls["length"].currentData()]
+        if self.controls["thinking"].currentData() and self.controls["thinking"].isEnabled():
+            wanted["thinking"] = self.controls["thinking"].currentData()
+        wanted = {k: personas.sampler_value(k, v) for k, v in wanted.items()}
+        merged = dict(profiles.read(self.persona.id).get(name, {}).get("samplers", {}))
+        merged.update({k: v for k, v in wanted.items() if v is not None})
+        try:
+            profiles.save_samplers(self.persona.id, {name: merged})
+        except OSError as e:
+            self.window.say(f"Can't keep the settings: {e}")
+            return
+        self.window.profile_kept(self.persona.id, name, merged)
+        self.window.say(f"{self.persona.name} on {name} now uses "
+                        + ", ".join(f"{k} {v}" for k, v in sorted(wanted.items())))
+        for key in self.KEPT:
+            self.controls[key].setCurrentIndex(0)
 
     # --- the model --------------------------------------------------------------------
 

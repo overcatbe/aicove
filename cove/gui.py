@@ -2955,6 +2955,23 @@ class Window(QMainWindow):
                 self.p_baseline = self.persona_state()
             self.persona_changed()
 
+    def profile_kept(self, pid, name, samplers):
+        """The chat's "Keep for" wrote a model's settings: the Personas tab must show them, and not
+        put its older copy back at the next Save."""
+        if self.persona is None or self.persona.id != pid:
+            return
+        if not self.persona_dirty():
+            self.load_persona(self.persona)
+            return
+        self.flush_rows()
+        self.p_prof[name] = dict(samplers)
+        self.p_forgotten.discard(name)
+        if self.p_target == name:
+            self.show_rows(samplers)
+        self.fill_profiles()
+        self.show_profile_info()
+        self.persona_changed()
+
     def take_profile(self):
         who, theirs = self.other_profile()
         if who:
