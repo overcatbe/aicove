@@ -510,7 +510,8 @@ class ChatTab(QWidget):
         self.title.setFont(font)
         self.model = QComboBox()
         self.model.currentIndexChanged.connect(lambda _: (self.show_thinking_control(), self.show_state()))
-        self.model.setToolTip("The models this persona may run on, that are on this machine")
+        self.model.setToolTip("The model for this chat: the persona's own on top, then all the others. "
+                              "Picking one doesn't change the persona.")
         self.load_btn = QPushButton("Load")
         self.load_btn.setToolTip("Load this model now (the one loaded at the moment is stopped)")
         self.load_btn.clicked.connect(lambda: self.load_model())
@@ -689,7 +690,7 @@ class ChatTab(QWidget):
         if self.persona and self.persona.id == pid:
             self.persona = personas.Persona.read(pid)
             self.show_face()
-            self.fill_models()
+            self.fill_models(keep=True)
             self.show_knowledge()
             return
         self.persona = personas.Persona.read(pid)
@@ -717,15 +718,29 @@ class ChatTab(QWidget):
         pixmap.setDevicePixelRatio(ratio)
         self.face.setPixmap(pixmap)
 
-    def fill_models(self):
+    def fill_models(self, keep=False):
+        """Every launcher: the persona's own first, then a line, then the others (this machine's,
+        then those of other machines). Picking one only changes this chat's model, never the
+        persona. keep: what was picked stays (the same persona's list filled again); else what is
+        loaded; else the persona's first."""
         here = {l.name: l for l in launchers.find_launchers() if not l.error}
-        names = [n for n in self.persona.models if n in here] or sorted(here)
+        own = [n for n in self.persona.models if n in here]
+        others = sorted((n for n in here if n not in own), key=lambda n: (bool(here[n].host), n.lower()))
         loaded = chat.loaded_launcher()
+        picked = self.model.currentData() if keep else None
+        self.model.blockSignals(True)
         self.model.clear()
-        for name in names:
+        for name in own:
             self.model.addItem(here[name].label(), name)
-        if loaded and loaded.name in names:
-            self.model.setCurrentIndex(names.index(loaded.name))
+        if own and others:
+            self.model.insertSeparator(self.model.count())
+        for name in others:
+            self.model.addItem(here[name].label(), name)
+        index = self.model.findData(picked) if picked else -1
+        if index < 0:
+            index = self.model.findData(loaded.name) if loaded else -1
+        self.model.setCurrentIndex(index if index >= 0 else 0)
+        self.model.blockSignals(False)
         self.show_thinking_control()
         self.show_state()
 
