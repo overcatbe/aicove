@@ -2428,6 +2428,7 @@ class Window(QMainWindow):
         # Which settings the fields show: the persona's own (every model), or what differs on one
         # model on this machine (profiles.py).
         self.p_base, self.p_prof, self.p_used, self.p_forgotten = {}, {}, {}, set()
+        self.p_votes = {}
         self.p_target, self.p_switching = "", False
         self.p_profile = Combo()
         self.p_profile.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -2797,6 +2798,7 @@ class Window(QMainWindow):
         found = profiles.read(persona.id) if persona else {}
         self.p_prof = {l: dict(e["samplers"]) for l, e in found.items()}
         self.p_used = {l: e["used"] for l, e in found.items()}
+        self.p_votes = {l: (e["up"], e["down"]) for l, e in found.items()}
         self.p_forgotten = set()
         self.p_target = ""
         self.fill_profiles()
@@ -2812,7 +2814,9 @@ class Window(QMainWindow):
         for l in known:
             bits = ([f"used {self.p_used[l]}"] if self.p_used.get(l) else []) \
                 + ([f"{len(self.p_prof[l])} own setting{'s' if len(self.p_prof[l]) != 1 else ''}"]
-                   if self.p_prof.get(l) else [])
+                   if self.p_prof.get(l) else []) \
+                + [" ".join(f"{mark} {n}" for mark, n in zip("👍👎", self.p_votes.get(l, (0, 0))) if n)]
+            bits = [b for b in bits if b]
             if l not in self.p_launchers:
                 # Gone, or its machine is off: greyed, kept until forgotten.
                 bits.append("not here now")

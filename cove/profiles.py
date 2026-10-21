@@ -3,9 +3,11 @@
 # them. A section per launcher holds what differs from the persona's own settings
 # (persona.txt), plus "used", the day it last answered with that model. A launcher's section
 # appears the first time the persona answers on it, empty: it then runs on the persona's settings.
+# "up" and "down" count the 👍 and 👎 given to its answers there.
 #
 #   ["defiant"]
 #   used = "2026-10-21"
+#   up = 3
 #   temperature = "0.9"
 
 import os
@@ -35,7 +37,8 @@ def path(pid, who=None):
 
 
 def read(pid, who=None):
-    """{launcher: {"used": day or "", "samplers": {key: value}}} of one machine (this one)."""
+    """{launcher: {"used": day or "", "up": n, "down": n, "samplers": {key: value}}} of one
+    machine (this one)."""
     try:
         with open(path(pid, who), "rb") as f:
             data = tomllib.load(f)
@@ -49,8 +52,16 @@ def read(pid, who=None):
         for key, value in section.items():
             if key in personas.SAMPLERS and personas.sampler_value(key, value) is not None:
                 samplers[key] = personas.sampler_value(key, value)
-        found[name] = {"used": str(section.get("used", "")), "samplers": samplers}
+        found[name] = {"used": str(section.get("used", "")), "samplers": samplers,
+                       **{k: count(section.get(k)) for k in VOTES}}
     return found
+
+
+VOTES = ("up", "down")
+
+
+def count(value):
+    return value if isinstance(value, int) and value > 0 else 0
 
 
 def write(pid, found):
@@ -62,6 +73,9 @@ def write(pid, found):
         lines.append(f'["{name}"]')
         if found[name].get("used"):
             lines.append(f'used = "{found[name]["used"]}"')
+        for key in VOTES:
+            if found[name].get(key):
+                lines.append(f"{key} = {found[name][key]}")
         for key in personas.SAMPLERS:
             if key in found[name]["samplers"]:
                 lines.append(f'{key} = "{found[name]["samplers"][key]}"')
@@ -96,7 +110,7 @@ def used(pid, launcher):
         return
     found = read(pid)
     today = time.strftime("%Y-%m-%d")
-    entry = found.setdefault(launcher, {"used": "", "samplers": {}})
+    entry = found.setdefault(launcher, {"used": "", "samplers": {}, "up": 0, "down": 0})
     if entry["used"] != today:
         entry["used"] = today
         write(pid, found)
@@ -109,9 +123,22 @@ def save_samplers(pid, wanted, forgotten=()):
     for name in forgotten:
         found.pop(name, None)
     for name, samplers in wanted.items():
-        found[name] = {"used": found.get(name, {}).get("used", ""), "samplers": dict(samplers)}
+        found[name] = {**found.get(name, {"used": ""}), "samplers": dict(samplers)}
     if found or os.path.exists(path(pid)):
         write(pid, found)
+
+
+def vote(pid, launcher, was, now):
+    """An answer on launcher got 👍/👎 ("up", "down" or "" for none) instead of was."""
+    if was == now or not launcher or not SECTION.fullmatch(launcher) or not os.path.isdir(personas.folder(pid)):
+        return
+    found = read(pid)
+    entry = found.setdefault(launcher, {"used": "", "samplers": {}, "up": 0, "down": 0})
+    if was in VOTES:
+        entry[was] = max(entry.get(was, 0) - 1, 0)
+    if now in VOTES:
+        entry[now] = entry.get(now, 0) + 1
+    write(pid, found)
 
 
 def holders(launcher):

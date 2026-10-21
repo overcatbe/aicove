@@ -36,6 +36,11 @@ chats of the one you picked; on the right the chat.
 - **answer again** keeps the answer it replaces: **◀ 2/3 ▶** under the last answer switches
   between them, and the one shown is what the chat goes on with. When you write your next
   message, the others are dropped.
+- **again with…** does the same on another model, picked from a menu (it loads it if
+  needed). Each answer says which model wrote it.
+- **👍 / 👎** under an answer (click again to take it back) are counted for the persona on
+  the answer's model; the Personas tab shows the counts under **Settings for:**, to see which
+  model suits it.
 - **Picture…** (or drop or paste a picture into the box) sends a picture with your message,
   for a model that can see: a launcher with an **eyes** file (mmproj), marked 👁 wherever models
   are listed. If the chosen model can't see, AIcove offers to load one that can; **Send

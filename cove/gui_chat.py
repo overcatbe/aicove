@@ -11,7 +11,7 @@ import time
 
 import markdown
 from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QCursor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
@@ -1258,6 +1258,11 @@ class ChatTab(QWidget):
         if what == "keep" and number.isdigit() and int(number) < len(self.chat.messages):
             self.keep(self.chat.messages[int(number)]["content"])
             return
+        if what == "rate":
+            number, _, vote = number.partition("/")
+            if number.isdigit() and int(number) < len(self.chat.messages):
+                self.rate(int(number), vote)
+            return
         if what == "version" and number.isdigit():
             if self.player is not None:
                 self.player.stop()
@@ -1293,6 +1298,17 @@ class ChatTab(QWidget):
             if dialog.again:
                 self.send()
             return
+        elif what == "againwith":
+            launcher = self.pick_model(message.get("model", ""))
+            if launcher is None:
+                return
+            self.model.setCurrentIndex(self.model.findData(launcher))
+            self.chat.put_aside()
+            self.open_thinking.clear()
+            self.chat.save()
+            self.paint()
+            self.send()
+            return
         elif what == "again":
             # A new answer to the same question; this one (with its tool steps) is kept as an
             # earlier version.
@@ -1315,6 +1331,40 @@ class ChatTab(QWidget):
             self.chat.save()
         self.paint()
         self.measure(again=True)
+
+    def rate(self, i, vote):
+        """👍/👎 for an answer (the same again takes it back), counted for the persona on the
+        answer's model (profiles.py)."""
+        message = self.chat.messages[i]
+        was = message.get("rating", "")
+        now = "" if vote == was else vote if vote in profiles.VOTES else ""
+        if now:
+            message["rating"] = now
+        else:
+            message.pop("rating", None)
+        self.chat.save()
+        try:
+            profiles.vote(self.persona.id, message.get("model", ""), was, now)
+        except OSError as e:
+            self.window.say(f"Can't count the vote: {e}")
+        self.paint()
+
+    def pick_model(self, now):
+        """A menu of the chat's models at the mouse; the launcher's name, or None."""
+        menu = QMenu(self)
+        for k in range(self.model.count()):
+            name = self.model.itemData(k)
+            if not name:
+                if self.model.itemText(k) == "" and not menu.isEmpty():
+                    menu.addSeparator()
+                continue
+            action = menu.addAction(self.model.itemText(k))
+            action.setData(name)
+            if name == now:
+                action.setEnabled(False)
+                action.setText(action.text() + "  (this answer)")
+        chosen = menu.exec(QCursor.pos())
+        return chosen.data() if chosen is not None else None
 
     def on_summary(self, action):
         """The "So far" box: edit it, or drop it (the next message makes a new one if needed)."""
@@ -1618,8 +1668,13 @@ class ChatTab(QWidget):
                         links.insert(0, f"<a href='cove:listen/{i}'>■ stop</a>")
                     else:
                         links.insert(0, f"<a href='cove:listen/{i}'>🔊 listen</a>")
+                if m["content"]:
+                    vote = m.get("rating", "")
+                    links += [f"<a href='cove:rate/{i}/{k}'>{f'<b>{mark}</b>' if vote == k else mark}</a>"
+                              for k, mark in (("up", "👍"), ("down", "👎"))]
                 if i == last:
                     links.append(f"<a href='cove:again/{i}'>answer again</a>")
+                    links.append(f"<a href='cove:againwith/{i}'>again with…</a>")
                     version, versions = self.chat.versions()
                     if versions > 1:
                         back = f"<a href='cove:version/{version - 1}'>◀</a>" if version > 0 else "◀"
