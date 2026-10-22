@@ -38,7 +38,7 @@ chats of the one you picked; on the right the chat.
   message, the others are dropped.
 - **again with…** does the same on another model, picked from a menu (it loads it if
   needed). Each answer says which model wrote it.
-- **👍 / 👎** under an answer (the chosen one says *liked* or *not liked*; click it again to take it back) are counted for the persona on
+- **👍 / 👎** under an answer (the chosen one is shown bigger; click it again to take it back) are counted for the persona on
   the answer's model; the Personas tab shows the counts under **Settings for:**, to see which
   model suits it.
 - **Picture…** (or drop or paste a picture into the box) sends a picture with your message,
