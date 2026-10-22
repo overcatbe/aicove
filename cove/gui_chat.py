@@ -1576,11 +1576,29 @@ class ChatTab(QWidget):
         self.view.setHtml(self.page())
         bar.setValue(bar.maximum() if at_end or self.worker else keep)
 
+    @staticmethod
+    def buttons(links, dim, ground):
+        """The links under a message as a row of small buttons (cells with a ground: the view
+        can't show real buttons); what isn't a single link (counts, the ◀ 1/2 ▶) stays plain."""
+        if not links:
+            return ""
+        cells = []
+        for link in links:
+            if re.fullmatch(r"<a [^>]*>.*?</a>", link) and link.count("<a ") == 1:
+                if "text-decoration" not in link:
+                    link = link.replace("<a ", "<a style='text-decoration:none' ", 1)
+                cells.append(f"<td bgcolor='{ground}' valign='middle' style='font-size:small'>&nbsp;{link}&nbsp;</td>")
+            else:
+                cells.append(f"<td valign='middle' style='color:{dim}; font-size:small'>{link}</td>")
+        return f"<table cellspacing='4' cellpadding='3' style='margin-top:2px'><tr>{''.join(cells)}</tr></table>"
+
     def page(self):
         pal = self.palette()
         dark = pal.window().color().lightness() < 128
         dim = pal.placeholderText().color().name()
         mine = pal.alternateBase().color().name()
+        # Buttons under messages: a step lighter (dark theme) or darker than the page.
+        button = pal.base().color().lighter(190).name() if dark else pal.base().color().darker(112).name()
         if self.persona is None:
             return f"<p style='color:{dim}'>No personas yet — make one on the Personas tab.</p>"
         messages = self.chat.messages if self.chat else []
@@ -1632,8 +1650,7 @@ class ChatTab(QWidget):
                             f"height='{int(size.height() * scale)}'></a></p>")
                 parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
                              f"{head}<br>{seen}{to_html(m['content'], dark)}"
-                             f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>"
-                             "</td></tr></table>")
+                             f"{self.buttons(links, dim, button)}</td></tr></table>")
                 continue
             if m["role"] != "assistant":
                 continue
@@ -1689,7 +1706,7 @@ class ChatTab(QWidget):
                 if m.get("stats"):
                     links.append(f"{m['stats']['tokens']:,} tokens · {m['stats']['speed']} t/s")
             head = f"<p style='margin:0'>{name}{model}</p>" if first else ""
-            links = f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>" if links else ""
+            links = self.buttons(links, dim, button)
             parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}{links}</td></tr></table>")
         if self.live is not None:
             body = ""
