@@ -10,6 +10,7 @@ import json
 import re
 import urllib.request
 
+from . import turns
 from .settings import S
 
 # Summarise when the chat fills this share of the context; keep this share word for word.
@@ -43,7 +44,8 @@ HEADER = ("[Summary of the earlier part of this conversation. The original messa
 
 
 def post(path, body, timeout=900):
-    req = urllib.request.Request(S.llama_url() + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    req = urllib.request.Request(S.llama_url() + path, json.dumps(turns.body_in_turns(body)).encode(),
+                                 {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 

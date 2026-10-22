@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import facts, files, knowledge, launchers, personas, pictures, profiles, server, summary, voice, web
+from . import facts, files, knowledge, launchers, personas, pictures, profiles, server, summary, turns, voice, web
 from .settings import S
 
 CHAT_ID = re.compile(r"\d{8}-\d{6}(-\d+)?")
@@ -318,7 +318,7 @@ def stream(body, on_part, stop=lambda: False, timings=None):
     kind being "thinking" or "text". stop() is asked between pieces; when it says yes the answer
     ends there. timings (a dict) gets llama-server's numbers of the answer, if it sends them. Returns (why it ended: "stop", "length", "tool_calls", "stopped" (by us);
     the tool calls as [{id, name, arguments}]), or raises OSError."""
-    req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(body).encode(),
+    req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(turns.body_in_turns(body)).encode(),
                                  {"Content-Type": "application/json"})
     try:
         r = urllib.request.urlopen(req, timeout=600)
