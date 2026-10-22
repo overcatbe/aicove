@@ -1670,8 +1670,9 @@ class ChatTab(QWidget):
                         links.insert(0, f"<a href='cove:listen/{i}'>🔊 listen</a>")
                 if m["content"]:
                     vote = m.get("rating", "")
-                    links += [f"<a href='cove:rate/{i}/{k}'>{f'<b>{mark}</b>' if vote == k else mark}</a>"
-                              for k, mark in (("up", "👍"), ("down", "👎"))]
+                    # Bold doesn't show on an emoji: the chosen one says so in words.
+                    links += [f"<a href='cove:rate/{i}/{k}'>{f'{mark} <b>{word}</b>' if vote == k else mark}</a>"
+                              for k, mark, word in (("up", "👍", "liked"), ("down", "👎", "not liked"))]
                 if i == last:
                     links.append(f"<a href='cove:again/{i}'>answer again</a>")
                     links.append(f"<a href='cove:againwith/{i}'>again with…</a>")
