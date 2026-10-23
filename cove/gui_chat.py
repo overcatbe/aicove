@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMenu, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import bestof, chat, facts, knowledge, launchers, personas, pictures, profiles, server, settings, summary, voice
+from . import bestof, chat, facts, gui_state, knowledge, launchers, personas, pictures, profiles, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -564,7 +564,6 @@ class ChatTab(QWidget):
         self.view.customContextMenuRequested.connect(self.view_menu)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Write here. Enter sends, Shift+Enter makes a new line.")
-        self.input.setFixedHeight(96)
         self.input.installEventFilter(self)
         self.input.viewport().installEventFilter(self)
         self.attached = None   # (QImage, name) of a picture going with the next message
@@ -643,10 +642,14 @@ class ChatTab(QWidget):
         rbox = QVBoxLayout(right)
         rbox.setContentsMargins(0, 0, 0, 0)
         rbox.addLayout(head)
-        rbox.addWidget(self.view, 1)
-        rbox.addLayout(knobs)
-        rbox.addWidget(self.attach_label)
-        rbox.addLayout(bottom)
+        # The chat over its controls and the box you write in, with a divider to make that bigger.
+        below = QWidget()
+        bbox = QVBoxLayout(below)
+        bbox.setContentsMargins(0, 0, 0, 0)
+        bbox.addLayout(knobs)
+        bbox.addWidget(self.attach_label)
+        bbox.addLayout(bottom, 1)
+        rbox.addWidget(gui_state.resizable(self.view, below, "chat_input", 140), 1)
 
         split = QSplitter()
         split.addWidget(left)

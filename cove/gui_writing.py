@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from . import chat, facts, launchers, personas, summary, writing
+from . import chat, facts, gui_state, launchers, personas, summary, writing
 from .gui_chat import to_html
 from .settings import STATE_DIR
 
@@ -513,27 +513,11 @@ class ChapterEditor(TextBox):
 
 
 def remembered(key, default=None):
-    try:
-        with open(os.path.join(STATE_DIR, "writing.json"), encoding="utf-8") as f:
-            return json.load(f).get(key, default)
-    except (OSError, ValueError):
-        return default
+    return gui_state.remembered(key, default, "writing.json")
 
 
 def remember(key, value):
-    path = os.path.join(STATE_DIR, "writing.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    data[key] = value
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except OSError:
-        pass
+    gui_state.remember(key, value, "writing.json")
 
 
 class Ask(QThread):
@@ -645,7 +629,6 @@ class TalkPanel(QWidget):
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Ask about the chapter or the selected text, or say what to change "
                                       "(Enter sends, Shift+Enter is a new line)")
-        self.input.setMaximumHeight(90)
         self.input.installEventFilter(self)
         self.send_btn = QPushButton("Send")
         self.send_btn.clicked.connect(lambda: self.send())
@@ -676,11 +659,18 @@ class TalkPanel(QWidget):
         box.addLayout(row)
         box.addWidget(self.state)
         box.addLayout(trow)
-        box.addWidget(self.view, 1)
-        box.addWidget(self.put_btn)
-        box.addWidget(self.target)
-        box.addWidget(self.input)
-        box.addLayout(brow)
+        # The talk over the box you write in, with a divider to make that bigger.
+        above, below = QWidget(), QWidget()
+        abox = QVBoxLayout(above)
+        abox.setContentsMargins(0, 0, 0, 0)
+        abox.addWidget(self.view, 1)
+        abox.addWidget(self.put_btn)
+        abox.addWidget(self.target)
+        bbox = QVBoxLayout(below)
+        bbox.setContentsMargins(0, 0, 0, 0)
+        bbox.addWidget(self.input, 1)
+        bbox.addLayout(brow)
+        box.addWidget(gui_state.resizable(above, below, "writing_input", 130), 1)
 
         self.window.proc.finished.connect(self.model_started)
         self.timer = QTimer(self)

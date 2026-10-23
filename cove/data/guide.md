@@ -30,6 +30,8 @@ chats of the one you picked; on the right the chat.
   set on the Personas tab); the list shows the ones this machine has. If another model is loaded,
   sending loads this one first (that stops the other). **Load** does it without sending.
 - **Stop** ends an answer early; what came so far is kept.
+- The box you write in can be made taller: drag the line above the Style menus (in the Writing
+  tab, the line above the box). AIcove keeps the size.
 - Under each message: **edit**, **delete**, and for the last answer **answer again**. Editing
   your own message offers **Save and answer again**: everything after it goes, and the persona
   answers anew.
