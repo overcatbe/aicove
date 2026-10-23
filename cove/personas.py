@@ -11,7 +11,7 @@ import shutil
 import time
 import zipfile
 
-from .settings import PERSONA_DIR
+from .settings import COVE_DIR, PERSONA_DIR
 
 TRASH_DIR = os.path.join(PERSONA_DIR, ".trash")
 PERSONA_FILE = "persona.txt"
@@ -41,8 +41,19 @@ def sampler_value(key, value):
     return text + "0" if text.endswith(".") else text
 
 
+# An agent talks in the chat like a persona, as "@<agent id>"; its chats, knowledge, picture and
+# settings per model are then in its own folder (agents.py), its words in agent.txt and voice.txt.
+AGENT = "@"
+
+
+def is_agent(pid):
+    return pid.startswith(AGENT)
+
+
 def folder(pid):
     """The folder of a persona: its file, picture, knowledge, notes and chats."""
+    if is_agent(pid):
+        return os.path.join(COVE_DIR, "agents", pid[len(AGENT):])
     return os.path.join(PERSONA_DIR, pid)
 
 
@@ -101,6 +112,9 @@ class Persona:
 
     @classmethod
     def read(cls, pid):
+        if is_agent(pid):
+            from . import agents
+            return agents.Agent.read(pid[len(AGENT):]).as_persona()
         p = cls(pid)
         with open(p.path, encoding="utf-8") as f:
             text = f.read()

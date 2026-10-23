@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 from . import fetch, personas, profiles, server, settings, sync, tools, voice
 from . import launchers as launcher_files
-from .gui_chat import FACE_SIZE, ChatTab, face
+from .gui_chat import FACE_SIZE, ChatTab, face, square_png
 from .gui_agents import AgentsTab
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
@@ -1549,7 +1549,8 @@ class Window(QMainWindow):
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is self.agents_tab
                                          and not self.agents_tab.dirty() and self.agents_tab.reload())
         self.writing_tab = WritingTab(self)
-        self.tabs.insertTab(2, self.writing_tab, "Writing")
+        # Chat, Agents, Personas, Launchers, Writing, then the rest.
+        self.tabs.insertTab(self.tabs.indexOf(self.persona_page) + 2, self.writing_tab, "Writing")
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is not self.writing_tab
                                          and self.writing_tab.leave())
         self.tabs.setCurrentIndex(0)
@@ -2746,19 +2747,11 @@ class Window(QMainWindow):
                                               "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;All files (*)")
         if not path:
             return
-        image = QImage(path)
-        if image.isNull():
+        data = square_png(path, PICTURE_SIZE)
+        if data is None:
             QMessageBox.warning(self, "Picture", f"Can't read {path} as an image.")
             return
-        # Fill the square and cut off what sticks out, so nothing gets squeezed.
-        image = image.scaled(PICTURE_SIZE, PICTURE_SIZE, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                             Qt.TransformationMode.SmoothTransformation)
-        image = image.copy((image.width() - PICTURE_SIZE) // 2, (image.height() - PICTURE_SIZE) // 2,
-                           PICTURE_SIZE, PICTURE_SIZE)
-        buffer = QBuffer()
-        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buffer, "PNG")
-        self.p_picture = bytes(buffer.data())
+        self.p_picture = data
         self.persona_changed()
 
     def unpick_picture(self):

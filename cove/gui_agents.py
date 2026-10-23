@@ -11,15 +11,15 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFont
+from PyQt6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QTabWidget,
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import agents, chat, launchers, personas, server
-from .gui_chat import to_html
+from . import agents, chat, launchers, personas, server, writing
+from .gui_chat import face, square_png, to_html
 from .settings import STATE_DIR
 
 ROLE = Qt.ItemDataRole.UserRole
@@ -146,6 +146,31 @@ class WorkDialog(QDialog):
         box.addWidget(buttons)
 
 
+class WriteDialog(QDialog):
+    """Write it with…: a new Writing project from a report, with a persona to write it with."""
+    def __init__(self, parent, story, default):
+        super().__init__(parent)
+        self.setWindowTitle("Write it with")
+        form = QFormLayout(self)
+        self.title = QLineEdit(story.title)
+        self.title.setMinimumWidth(420)
+        form.addRow("New project", self.title)
+        self.who = QComboBox()
+        for p in sorted(personas.load_all().values(), key=lambda p: p.name.lower()):
+            self.who.addItem(p.name, p.id)
+        self.who.setCurrentIndex(max(self.who.findData(default), 0))
+        form.addRow("Write it with", self.who)
+        note = QLabel("The report and its sources go into the project's Plans page, which the persona always "
+                      "reads; chapter 1 starts empty.")
+        note.setWordWrap(True)
+        note.setEnabled(False)
+        form.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+
 class ArticlesDialog(QDialog):
     def __init__(self, parent, story, names, default):
         super().__init__(parent)
@@ -262,6 +287,10 @@ class AgentsTab(QWidget):
         work_btn = QPushButton("Work on it…")
         work_btn.setToolTip("A new chat with a persona of your choice, the story and its sources in it to start from")
         work_btn.clicked.connect(self.work_on_it)
+        write_btn = QPushButton("Write it with…")
+        write_btn.setToolTip("A new project in the Writing tab with a persona of your choice; the report and "
+                             "its sources are in its Plans page")
+        write_btn.clicked.connect(self.write_it_with)
         self.articles_btn = QPushButton("Write articles…")
         self.articles_btn.setToolTip("Articles from this research dossier, written by a persona you pick")
         self.articles_btn.clicked.connect(self.write_articles)
@@ -269,6 +298,7 @@ class AgentsTab(QWidget):
         self.mark_btns = {}
         buttons = QHBoxLayout()
         buttons.addWidget(work_btn)
+        buttons.addWidget(write_btn)
         buttons.addWidget(self.articles_btn)
         buttons.addStretch(1)
         for status, label, tip in (("kept", "Keep", "Worth keeping; more like this in the next hunts"),
@@ -414,6 +444,33 @@ class AgentsTab(QWidget):
         tab.input.setPlainText(f"Let's work on this story ({e.agent.name} found it):\n\n{s.markdown()}")
         tab.input.setFocus()
 
+    def write_it_with(self):
+        e, s = self.story()
+        if s is None:
+            return
+        have = personas.load_all()
+        default = e.agent.work_with(s.theme) or ("writing-buddy" if "writing-buddy" in have else "")
+        dialog = WriteDialog(self, s, default)
+        if not dialog.exec() or not dialog.title.text().strip():
+            return
+        tab = self.window.writing_tab
+        tab.leave()
+        try:
+            p = writing.create(dialog.title.text().strip(), [("Chapter 1", "")])
+            p.persona = dialog.who.currentData() or ""
+            p.write()
+            plans = os.path.join(writing.bible_dir(p), "plans.md")
+            os.makedirs(os.path.dirname(plans), exist_ok=True)
+            writing.write_page(plans, f"From {e.agent.name}'s report ({s.found[:10]}). Facts only from these "
+                                      f"sources; check them before they go in the text.\n\n{s.markdown()}\n")
+        except OSError as err:
+            QMessageBox.warning(self, "Write it with", str(err))
+            return
+        self.window.tabs.setCurrentWidget(tab)
+        tab.fill_projects(select=p.id)
+        self.window.say(f"New project \"{p.title}\" with {have[p.persona].name if p.persona in have else 'no persona'}; "
+                        f"the report is on its Plans page.")
+
     def write_articles(self, *_):
         e, s = self.story()
         if s is None or s.meta.get("kind") != "dossier":
@@ -453,7 +510,24 @@ class AgentsTab(QWidget):
         lbox.addWidget(self.update_btn)
 
         self.name = QLineEdit()
-        self.persona = QComboBox()
+        # Its face, kept at once (not on Save), like a file in its folder.
+        self.face = QLabel()
+        self.face.setFixedSize(56, 56)
+        self.pick_btn = QPushButton("Choose picture…")
+        self.pick_btn.clicked.connect(self.pick_picture)
+        self.unpick_btn = QPushButton("Remove picture")
+        self.unpick_btn.clicked.connect(self.unpick_picture)
+        picture = QHBoxLayout()
+        picture.addWidget(self.face)
+        picture.addWidget(self.pick_btn)
+        picture.addWidget(self.unpick_btn)
+        picture.addStretch(1)
+        self.voice = QPlainTextEdit()
+        self.voice.setPlaceholderText("Optional: how it talks, if it has a character (a gruff ship's engineer). "
+                                      "Only the way it says things: its facts rules always come first. "
+                                      "Empty = plain and neutral.")
+        self.voice.setMaximumHeight(80)
+        self.voice.textChanged.connect(self.changed)
         self.models = QListWidget()
         self.models.setMaximumHeight(110)
         self.models.setToolTip("Ticked ones, in this order: the loaded model is used if it is one of them, "
@@ -463,11 +537,11 @@ class AgentsTab(QWidget):
         self.schedule_says = QLabel()
         self.schedule_says.setEnabled(False)
         self.style = QComboBox()
-        self.style.addItem("as the persona has it", "")
+        self.style.addItem("as the model has it", "")
         for name in chat.STYLES:
             self.style.addItem(name, name)
         self.thinking = QComboBox()
-        for label, value in (("as the persona has it", ""), ("on", "on"), ("off", "off")):
+        for label, value in (("as the model has it", ""), ("on", "on"), ("off", "off")):
             self.thinking.addItem(label, value)
         self.limit_boxes = {}
         limits = QHBoxLayout()
@@ -499,9 +573,11 @@ class AgentsTab(QWidget):
             w.textChanged.connect(self.changed)
         for w in (self.themes, self.task):
             w.textChanged.connect(self.changed)
-        for w in (self.persona, self.style, self.thinking):
+        for w in (self.style, self.thinking):
             w.currentIndexChanged.connect(self.changed)
         self.models.itemChanged.connect(self.changed)
+        self.files = QCheckBox("In the chat it may read files (those the Settings tab allows), never write")
+        self.files.toggled.connect(self.changed)
         self.cron = QCheckBox("Run on schedule on this machine")
         self.cron.setToolTip("A line in the crontab that runs \"aicove agent due\" every 10 minutes; agents "
                              "set to manual never run from it")
@@ -509,7 +585,8 @@ class AgentsTab(QWidget):
 
         form = QFormLayout()
         form.addRow("Name", self.name)
-        form.addRow("Persona", self.persona)
+        form.addRow("Picture", picture)
+        form.addRow("Voice", self.voice)
         form.addRow("Models", self.models)
         sched = QVBoxLayout()
         sched.addWidget(self.schedule)
@@ -522,7 +599,8 @@ class AgentsTab(QWidget):
         form.addRow("Search from", self.search_from)
         form.addRow("Themes", self.themes)
         form.addRow("Task", self.task)
-        may = QLabel("May: search the web and read pages, save its reports in its own folder. Never commands, "
+        form.addRow("", self.files)
+        may = QLabel("May: search the web and read pages, save its reports in its own folder; in the chat, read files if ticked. Never commands, "
                      "never other files.")
         may.setEnabled(False)
         may.setWordWrap(True)
@@ -581,8 +659,9 @@ class AgentsTab(QWidget):
             for e in [e for e in self.entries if e.place == place]:
                 st = e.state
                 mark = " ▶" if st.get("pid") or st.get("result") == "running" else ""
-                item = QListWidgetItem("   " + e.agent.name + mark)
+                item = QListWidgetItem(e.agent.name + mark)
                 item.setData(ROLE, e.key)
+                item.setIcon(QIcon(face(personas.Persona(e.agent.pid, e.agent.name, ""))))
                 self.agent_list.addItem(item)
                 if e.key == select:
                     pick = item
@@ -636,13 +715,13 @@ class AgentsTab(QWidget):
         a = e.agent if e else agents.Agent("-")
         place = e.place if e else HERE
         self.name.setText(a.name if e else "")
-        self.persona.clear()
-        known = self.personas_of(place)
-        for pid, name in sorted(known.items(), key=lambda p: p[1].lower()):
-            self.persona.addItem(name, pid)
-        if a.persona and a.persona not in known:
-            self.persona.addItem(f"{a.persona} (not there)", a.persona)
-        self.persona.setCurrentIndex(max(self.persona.findData(a.persona), 0))
+        self.voice.setPlainText(a.voice if e else "")
+        self.files.setChecked(a.files == "read")
+        # Voice and picture are files in the agent's folder: only for this machine's agents.
+        for w in (self.voice, self.pick_btn, self.unpick_btn):
+            w.setEnabled(e is not None and not e.place)
+        self.voice.setToolTip("" if not (e and e.place) else f"Set on {e.place}")
+        self.show_face()
         self.models.clear()
         there = self.launchers_of(place)
         for name in a.models + [n for n in there if n not in a.models]:
@@ -665,7 +744,7 @@ class AgentsTab(QWidget):
         self.search_from.setCurrentIndex(max(i, 0))
         self.folder_btn.setEnabled(e is not None and not e.place)
         self.switching = False
-        self.baseline = self.agent_from_form().text() if e else None
+        self.baseline = self.compared(self.agent_from_form()) if e else None
         self.show_state()
         self.changed()
 
@@ -700,7 +779,10 @@ class AgentsTab(QWidget):
         e = self.current
         a = agents.Agent(e.agent.id if e else "-")
         a.name = self.name.text().strip() or a.id
-        a.persona = self.persona.currentData() or ""
+        # An old agent file may still name a persona to run as; kept until the file says otherwise.
+        a.persona = e.agent.persona if e else ""
+        a.voice = self.voice.toPlainText().strip()
+        a.files = "read" if self.files.isChecked() else ""
         a.models = [self.models.item(i).data(ROLE) for i in range(self.models.count())
                     if self.models.item(i).checkState() == Qt.CheckState.Checked]
         a.schedule = self.schedule.text().strip() or "manual"
@@ -718,7 +800,49 @@ class AgentsTab(QWidget):
 
     def dirty(self):
         return self.current is not None and self.baseline is not None and not self.switching \
-            and self.agent_from_form().text() != self.baseline
+            and self.compared(self.agent_from_form()) != self.baseline
+
+    @staticmethod
+    def compared(a):
+        return a.text() + "\0" + a.voice
+
+    def show_face(self):
+        e = self.current
+        path = personas.picture_path(e.agent.pid) if e and not e.place else None
+        self.face.setPixmap(QPixmap(face(personas.Persona(e.agent.pid, e.agent.name, "")) if e else "").scaled(
+            56, 56, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.unpick_btn.setEnabled(bool(path))
+
+    def pick_picture(self):
+        e = self.current
+        if e is None or e.place:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Picture", os.path.expanduser("~"),
+                                              "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;All files (*)")
+        if not path:
+            return
+        data = square_png(path)
+        if data is None:
+            QMessageBox.warning(self, "Picture", f"Can't read {path} as an image.")
+            return
+        try:
+            personas.set_picture(e.agent.pid, data)
+        except OSError as err:
+            QMessageBox.warning(self, "Picture", str(err))
+            return
+        self.show_face()
+        self.fill_agents()
+
+    def unpick_picture(self):
+        e = self.current
+        if e is None or e.place:
+            return
+        try:
+            personas.remove_picture(e.agent.pid)
+        except OSError as err:
+            QMessageBox.warning(self, "Picture", str(err))
+        self.show_face()
+        self.fill_agents()
 
     def changed(self, *_):
         if self.switching:
@@ -750,7 +874,7 @@ class AgentsTab(QWidget):
             QMessageBox.warning(self, "Save", f"Can't save {a.name}: {err}")
             return False
         self.window.say(f"{a.name} saved" + (f" on {e.place}." if e.place else "."))
-        self.baseline = a.text()
+        self.baseline = self.compared(a)
         self.reload()
         return True
 
@@ -771,8 +895,7 @@ class AgentsTab(QWidget):
         n, base = 2, aid
         while aid in taken:
             aid, n = f"{base}-{n}", n + 1
-        known = self.personas_of(place)
-        a = agents.Agent(aid, name.strip(), "story-hunter" if "story-hunter" in known else next(iter(known), ""), NEW_TASK)
+        a = agents.Agent(aid, name.strip(), "", NEW_TASK)
         try:
             if place:
                 on_host(place, ["write", aid], stdin=a.text())

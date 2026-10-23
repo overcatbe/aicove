@@ -8,8 +8,9 @@ you chat with, your other tools, and your passwords.
 To chat: the **Chat** tab. Pick a persona, write, press Enter. If its model isn't loaded,
 AIcove loads it first. See the topic *Chat*. When you are done: **Stop everything** (top right).
 
-Models are set up on the **Launchers** tab (a model file and how it runs), personas on the
-**Personas** tab (who you talk to, and on which models).
+The tabs: **Chat**, **Agents** (who works for you: news, research, your machines), **Personas**
+(who you talk and write with, and on which models), **Launchers** (a model file and how it
+runs), **Writing**, then the rest.
 
 Only one model is loaded at a time. Starting another one stops the one that was running.
 
@@ -150,8 +151,11 @@ server running elsewhere (anything with the OpenAI image API). Needs a model tha
 
 ## Agents
 
-An agent is a persona with a standing task that works on its own and comes back with
-reports. The first one is a story hunter: it searches the web for news on your themes and
+Personas are for talking and writing; agents are for jobs. An agent has a name, a picture and a
+job; it works on its own and comes back with reports, and you can talk with it about them in the
+Chat tab (agents are listed there below the personas). What it finds you then write with a
+persona: **Work on it…** (a chat) or **Write it with…** (the Writing tab). The first one is a
+story hunter: it searches the web for news on your themes and
 brings **leads**: a headline, a line or two on what it is and why it is interesting, and the
 link, many of them, for you to scan and pick from. Set its **sites** limit to 2 or more and it
 writes each story up instead, as a small article from that many different sites, with the facts
@@ -165,13 +169,20 @@ source.
 - **Work on it…** starts a new chat with a persona you pick (the theme's persona if it has
   one, else Writing Buddy), Web on, with the report typed into the input: add what you want
   and send.
+- **Write it with…** makes a new project in the Writing tab with a persona you pick: the
+  report and its sources go on the project's **Plans** page, which the persona always reads;
+  chapter 1 starts empty.
 - **Keep** / **Used** / **Dismiss**: Dismiss takes it off the list (the file stays). Kept,
   used and dismissed stories go into the agent's next runs as your taste, more or less like
   them; nothing it reported before is reported again.
 
 **Agents** is where you set one up:
 
-- **Persona**: whose voice and facts it has. **Models**: the ticked launchers, in order. A
+- **Picture**: its face, in the lists and the chat (kept at once, no Save needed).
+- **Voice**: optional, how it talks if it has a character (a gruff ship's engineer). Only the
+  way it says things: its rules on facts and sources always come first. Empty = plain and
+  neutral, which is best for hunting.
+- **Models**: the ticked launchers, in order. A
   run uses the loaded model if it is one of them; with nothing loaded it starts the first one
   this machine has and stops it again afterwards. When another model is loaded (you are
   chatting) a scheduled run waits and tries again at the next check; **Run now** asks whether
@@ -190,6 +201,13 @@ source.
   Its SearXNG is started for the run if it isn't running, and stopped again afterwards.
 - **Themes**, one per line: `Name | what it means to you | persona to work on it with`.
 - **Task**: what it should do, in words.
+- **In the chat it may read files**: then, when you talk with it, it may read the files the
+  Settings tab allows (a system helper reads system files this way). Never write; runs never touch files.
+
+**Talking with an agent**: pick it in the Chat tab under **Agents**. It knows its job and its
+newest reports (and what you put in its `knowledge/` folder), answers in its voice, and with
+**Web** on it can check a report or dig deeper. A full run is still started here, with Run now
+or Research….
 
 **Research…** (next to Run now) gives the agent one topic to dig into instead: "Nazi weather
 stations and U-boats in the Arctic", "Bilderberg 2026", a name, a question. Old sources are
@@ -208,9 +226,9 @@ story stands on pages the agent read in that run, from as many different sites a
 says. Neither may be a front page (a front page only helps find articles) or older than 3 days
 when the page or its address says when it came out. A search for an old year ("October
 2024": models like the year they were trained in) is sent back. The agent is told today's and
-yesterday's date. For finding stories a persona with a plain or no prompt works best: a
-brainstorming persona invents angles and critics; let it work on the story afterwards (the
-theme's persona, **Work on it…**).
+yesterday's date. For finding stories a plain voice works best: a character invents angles and
+critics; let a persona work on the story afterwards (the theme's persona, **Work on it…**,
+**Write it with…**).
 
 An agent may search the web and read pages, and save its reports in its own folder. Nothing
 else: no files of yours, no commands. Runs go on when the window is closed; **Stop** ends one.
@@ -222,6 +240,7 @@ on its own schedule; editing, Run now and the reports work from here over ssh. T
 are fetched when the window opens and on **Update from other machines**.
 
 Where they are: `~/AIcove/agents/<id>/`: `agent.txt` (the settings, by hand works too),
+`voice.txt`, `picture.png`, `chats/` and `knowledge/` like a persona's,
 `stories/` (one Markdown file per report), `seen.txt` (links already reported), `runs/` (a log
 per run).
 

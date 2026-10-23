@@ -31,6 +31,8 @@ TOOLS_HEADER = ("[Your knowledge: material the user gave you to work from. It is
                 "question touches it, and say so when you take something from it. The files:]")
 
 _cache = {}
+# How many of an agent's newest reports it knows in the chat.
+REPORTS = 300
 
 
 def folder(pid):
@@ -118,6 +120,14 @@ def files(pid):
                 continue
             full = os.path.join(root, name)
             found.append((os.path.relpath(full, base), full))
+    if personas.is_agent(pid):
+        # An agent knows its reports (leads, stories, dossiers, articles), the newest first.
+        reports = os.path.join(personas.folder(pid), "stories")
+        try:
+            names = sorted((n for n in os.listdir(reports) if n.endswith(".md")), reverse=True)[:REPORTS]
+        except OSError:
+            names = []
+        found += [(f"reports/{n}", os.path.join(reports, n)) for n in names]
     return found
 
 

@@ -1,8 +1,12 @@
 # Agents: a persona with a standing task, run on its own (Run now, or on a schedule by cron
 # calling "aicove agent due"), that comes back with reports. An agent lives on the machine that
 # runs it, in the AIcove folder there:
-#   agents/<id>/agent.txt      name:, persona:, models:, schedule:, style:, thinking:, limits:,
-#                              theme: lines, empty line, then the task in words
+#   agents/<id>/agent.txt      name:, models:, schedule:, style:, thinking:, limits:, files:, theme: lines,
+#                              empty line, then the task in words (persona: from before agents
+#                              had their own voice still works)
+#   agents/<id>/voice.txt      how it talks, if it has a character; facts rules come first
+#   agents/<id>/picture.*      its face; chats/, knowledge/, models/ like a persona's: in the chat
+#                              an agent is "@<id>" (personas.folder) and knows its reports
 #   agents/<id>/stories/*.md   one report per story: title, teaser, article, sources, facts to check
 #   agents/<id>/seen.txt       links already reported, so they don't come again
 #   agents/<id>/runs/*.txt     what each run did; state.json: when it last ran and how it went
@@ -26,6 +30,17 @@ from .settings import COVE_DIR, MAIN, S
 
 AGENT_DIR = os.path.join(COVE_DIR, "agents")
 AGENT_FILE = "agent.txt"
+VOICE_FILE = "voice.txt"
+# What an agent is told in the chat, after its voice.
+CHAT = """You are {name}, an agent. On your own you do this job:
+
+{task}
+
+{themes}Now the user is talking with you about that work. Your reports (leads, stories, dossiers,
+articles) are your knowledge: look there first and name the report. When web search is on, use it
+to check a report, dig deeper or find more. Every fact you give comes from a report or a page you
+read; say which. Never invent sources, numbers or quotes; say "I don't know" instead. A full run
+(a hunt or a research) is started by the user on the Agents tab, not from here."""
 SAFE_ID = personas.SAFE_ID
 STATUSES = ["new", "kept", "used", "dismissed"]
 LIMITS = {"searches": 15, "pages": 12, "steps": 40, "minutes": 20, "stories": 3, "sites": 1}
@@ -87,6 +102,9 @@ class Agent:
         # The ssh host its searches and page reads go out from, or "" for the machine it runs on
         self.search_from = ""
         self.task = task
+        self.voice = ""
+        # "read": in the chat it may read files (what the Settings tab allows); never write.
+        self.files = ""
 
     @property
     def path(self):
@@ -116,6 +134,8 @@ class Agent:
                     word, _, number = part.strip().partition(" ")
                     if word in LIMITS and number.strip().isdigit():
                         a.limits[word] = max(1, int(number))
+            elif key == "files":
+                a.files = "read" if value == "read" else ""
             elif key == "search from":
                 a.search_from = value if launchers.NAME.fullmatch(value) else ""
             elif key == "theme":
@@ -129,10 +149,40 @@ class Agent:
     @classmethod
     def read(cls, aid):
         with open(os.path.join(folder(aid), AGENT_FILE), encoding="utf-8") as f:
-            return cls.parse(aid, f.read())
+            a = cls.parse(aid, f.read())
+        try:
+            with open(os.path.join(folder(aid), VOICE_FILE), encoding="utf-8") as f:
+                a.voice = f.read().strip()
+        except OSError:
+            pass
+        return a
+
+    @property
+    def pid(self):
+        """Its name in the chat and in the per-model settings."""
+        return personas.AGENT + self.id
+
+    def own(self, system):
+        """A persona made of the agent: its name, models and style, with this system prompt."""
+        p = personas.Persona(self.pid, self.name, system)
+        p.models = list(self.models)
+        p.files = self.files
+        for key, value in chat.STYLES.get(self.style, {}).items():
+            if personas.sampler_value(key, value) is not None:
+                p.samplers[key] = personas.sampler_value(key, value)
+        if self.thinking:
+            p.samplers["thinking"] = self.thinking
+        return p
+
+    def as_persona(self):
+        """The agent as the chat has it: its voice, its job, its reports as knowledge."""
+        themes = "".join(f"- {n}: {m}\n" if m else f"- {n}\n" for n, m, _ in self.themes)
+        return self.own("\n\n".join(x for x in (self.voice, CHAT.format(
+            name=self.name, task=self.task.strip() or "(no job written yet)",
+            themes=f"Your themes:\n{themes}\n" if themes else "")) if x))
 
     def text(self):
-        head = [f"name: {self.name}", f"persona: {self.persona}"]
+        head = [f"name: {self.name}"] + ([f"persona: {self.persona}"] if self.persona else [])
         if self.models:
             head.append(f"models: {', '.join(self.models)}")
         head.append(f"schedule: {self.schedule or 'manual'}")
@@ -143,6 +193,8 @@ class Agent:
         head.append("limits: " + ", ".join(f"{k} {self.limits[k]}" for k in LIMITS))
         if self.search_from:
             head.append(f"search from: {self.search_from}")
+        if self.files:
+            head.append(f"files: {self.files}")
         for name, meaning, pid in self.themes:
             head.append(f"theme: {name} | {meaning}" + (f" | {pid}" if pid else ""))
         return "\n".join(head) + "\n\n" + self.task.strip() + "\n"
@@ -153,6 +205,13 @@ class Agent:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(self.text())
         os.replace(tmp, self.path)
+        voice = os.path.join(folder(self.id), VOICE_FILE)
+        if self.voice.strip():
+            with open(voice + ".new", "w", encoding="utf-8") as f:
+                f.write(self.voice.strip() + "\n")
+            os.replace(voice + ".new", voice)
+        elif os.path.exists(voice):
+            os.remove(voice)
 
     def work_with(self, theme):
         """The persona to work on a story of this theme with, or ""."""
@@ -1023,8 +1082,8 @@ def run(agent, say=print, take=False, topic=None, articles=None):
                                     articles[3] if len(articles) > 3 else "")
             return 0
         with (web.via(agent.search_from, tell) if agent.search_from else contextlib.nullcontext()):
-            result = hunt(agent, persona or personas.Persona(agent.id, agent.name, ""), launcher, tell, saved, started,
-                          topic)
+            # Its own voice unless an old agent file names a persona to run as.
+            result = hunt(agent, persona or agent.own(agent.voice), launcher, tell, saved, started, topic)
         return 0
     except (OSError, ValueError) as e:
         tell(f"Couldn't run: {e}")

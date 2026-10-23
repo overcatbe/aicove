@@ -10,7 +10,7 @@ import threading
 import time
 
 import markdown
-from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QCursor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMenu, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import bestof, chat, facts, gui_state, knowledge, launchers, personas, pictures, profiles, server, settings, summary, voice
+from . import agents, bestof, chat, facts, gui_state, knowledge, launchers, personas, pictures, profiles, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -56,6 +56,20 @@ def letter_colour(c):
     else:
         place = (ord(c) % 26) / 26
     return QColor.fromHsvF(place, 0.65, 0.80).name()
+
+
+def square_png(path, side=256):
+    """An image file cut to a square of side px (filled, not squeezed) as PNG bytes, or None."""
+    image = QImage(path)
+    if image.isNull():
+        return None
+    image = image.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                         Qt.TransformationMode.SmoothTransformation)
+    image = image.copy((image.width() - side) // 2, (image.height() - side) // 2, side, side)
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    return bytes(buffer.data())
 
 
 def face(persona):
@@ -687,6 +701,23 @@ class ChatTab(QWidget):
             item.setIcon(QIcon(face(p)))
             self.people.addItem(item)
             if p.id == keep or (keep is None and pick is None and loaded and loaded.name in p.models):
+                pick = item
+        # Then the agents, to talk with about their work.
+        found = sorted(agents.load_all().values(), key=lambda a: a.name.lower())
+        if found:
+            head = QListWidgetItem("Agents")
+            head.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = head.font()
+            font.setBold(True)
+            head.setFont(font)
+            self.people.addItem(head)
+        for a in found:
+            item = QListWidgetItem(a.name)
+            item.setData(ROLE, a.pid)
+            item.setIcon(QIcon(face(personas.Persona(a.pid, a.name, ""))))
+            item.setToolTip(f"Agent: talk with {a.name} about its reports; runs are started on the Agents tab")
+            self.people.addItem(item)
+            if a.pid == keep:
                 pick = item
         self.people.blockSignals(False)
         if self.people.count():
