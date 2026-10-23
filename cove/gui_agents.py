@@ -208,8 +208,9 @@ class AgentsTab(QWidget):
         self.fetch.done.connect(self.fetched)
 
         self.pages = QTabWidget()
-        self.pages.addTab(self.reports_page(), "Reports")
+        reports = self.reports_page()
         self.pages.addTab(self.agents_page(), "Agents")
+        self.pages.addTab(reports, "Reports")
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(self.pages)
