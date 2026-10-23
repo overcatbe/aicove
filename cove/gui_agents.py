@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 
-from PyQt6.QtCore import QObject, QTimer, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, QTimer, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import agents, chat, launchers, personas, server, writing
-from .gui_chat import face, square_png, to_html
+from .gui_chat import FACE_SIZE, face, square_png, to_html
 from .settings import STATE_DIR
 
 ROLE = Qt.ItemDataRole.UserRole
@@ -489,6 +489,7 @@ class AgentsTab(QWidget):
 
     def agents_page(self):
         self.agent_list = QListWidget()
+        self.agent_list.setIconSize(QSize(FACE_SIZE, FACE_SIZE))
         self.agent_list.currentItemChanged.connect(self.on_agent)
         new_btn = QPushButton("New agent…")
         new_btn.clicked.connect(self.new_agent)
