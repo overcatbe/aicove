@@ -358,8 +358,10 @@ class AgentsTab(QWidget):
             where = f" · 🖥 {e.place}" if e.place else ""
             status = "" if s.status == "new" else f" · {s.status}"
             teaser = s.teaser if len(s.teaser) <= 160 else s.teaser[:160].rsplit(" ", 1)[0] + "…"
-            item = QListWidgetItem(f"{s.title}\n{teaser}\n{s.theme} · {s.found} · {e.agent.name}{where}{status}"
-                                   if teaser else f"{s.title}\n{s.theme} · {s.found} · {e.agent.name}{where}{status}")
+            before = s.earlier() if s.meta.get("follows") and not e.place else None
+            follows = f"↳ follows up: {before.title}\n" if before else ""
+            item = QListWidgetItem(f"{s.title}\n{follows}{teaser}\n{s.theme} · {s.found} · {e.agent.name}{where}{status}"
+                                   if teaser else f"{s.title}\n{follows}{s.theme} · {s.found} · {e.agent.name}{where}{status}")
             item.setData(ROLE, (e.place, e.agent.id, s.file))
             item.setToolTip(s.teaser)
             if s.status == "new":

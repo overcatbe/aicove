@@ -336,11 +336,24 @@ class Story:
             f.write(self.text())
         os.replace(tmp, self.path)
 
-    def markdown(self):
-        """The whole report, to read or to hand to a chat."""
+    def markdown(self, earlier=True):
+        """The whole report, to read or to hand to a chat; with the report it follows up, if any."""
         if self.meta.get("kind") == "lead":
-            return f"# {self.title}\n\n{self.body}\n"
-        return f"# {self.title}\n\n*{self.teaser}*\n\n{self.body}\n"
+            text = f"# {self.title}\n\n{self.body}\n"
+        else:
+            text = f"# {self.title}\n\n*{self.teaser}*\n\n{self.body}\n"
+        before = self.earlier() if earlier else None
+        if before is not None:
+            text += f"\n---\n\nThe earlier report it follows up ({before.found[:10]}):\n\n" + before.markdown(False)
+        return text
+
+    def earlier(self):
+        """The report this one follows up, or None."""
+        file = self.meta.get("follows", "")
+        if not file or "/" in file or not os.path.isfile(os.path.join(stories_dir(self.agent), file)):
+            return None
+        with open(os.path.join(stories_dir(self.agent), file), encoding="utf-8") as f:
+            return Story.parse(self.agent, file, f.read())
 
 
 def stories(aid):
@@ -524,6 +537,9 @@ SAVE_TOOL = {"type": "function", "function": {
                                           "each ending with the number of its source in brackets, e.g. \"... [1]\"."},
     }}}}
 
+# How far back a run sees what it reported, to name follow-ups.
+FOLLOW_DAYS, FOLLOW_MAX = 21, 80
+
 LEAD_TOOL = {"type": "function", "function": {
     "name": "save_lead",
     "description": "Save one lead for the user: a news item they may pick to write about. The address must be "
@@ -534,6 +550,10 @@ LEAD_TOOL = {"type": "function", "function": {
         "why": {"type": "string", "description": "One or two sentences: what it is and why it is interesting, "
                                                  "only from what the search result or page says."},
         "url": {"type": "string", "description": "The article's address, exactly as in the result or page."},
+        "follows": {"type": "string", "description": "Only if this news continues one of the earlier reports "
+                                                     "listed (a reply, a consequence, the same people days "
+                                                     "later): that report's title, exactly as listed. Else leave "
+                                                     "it out."},
     }}}}
 
 SOURCE_KINDS = ["primary", "research", "reference", "news", "book", "fringe", "other"]
@@ -638,6 +658,9 @@ or the page says, nothing invented. Open a page only when the result is too thin
 - The address must be an article from your search results or a page you read, copied exactly; never from \
 memory. A front page or an index of articles is not a lead: find the article. Nothing older than {fresh} \
 days: that is not news.
+- Connect: when a new item continues one of the earlier reports listed below (a reply, a consequence, \
+the same people a few days on), save it with follows set to that report's title. The user writes about \
+such connections; a true one is worth more than three loose leads. Only when it really is the same story.
 - Work fast: a search, then save the good leads from it, then the next search. When you are done, answer \
 with one short line about the hunt, without a tool call."""
 
@@ -653,7 +676,7 @@ sources disagree, say so. A thin source makes a short article: don't fill it up 
 - When you are done, answer with one short line about the hunt, without a tool call."""
 
 TASTE = """
-Reported before (don't bring these again):
+Reported before, newest first (don't bring these again; a new item that continues one may follow it up):
 {before}"""
 
 LIKED = """
@@ -674,7 +697,9 @@ def system_prompt(agent, persona):
                          yesterday_short=f"{yesterday.day} {yesterday:%B %Y}", year=datetime.date.today().year,
                          fresh=FRESH_DAYS, **agent.limits)
     known = stories(agent.id)
-    before = [s for s in known][:30]
+    # The last weeks, so that follow-ups can be seen (a run brings up to 30 leads).
+    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - FOLLOW_DAYS * 86400))
+    before = [s for s in known if s.found[:10] >= since][:FOLLOW_MAX] or known[:30]
     if before:
         rules += TASTE.format(before="\n".join(f"- {s.title} ({s.found[:10]})" for s in before))
     liked = [s for s in known if s.status in ("kept", "used")][:15]
@@ -852,7 +877,9 @@ def save_lead(agent, a, fetched, results, dates, saved, say, mine=None):
     themes = [n for n, _, _ in agent.themes]
     theme = " ".join(str(a.get("theme", "")).split())
     theme = next((n for n in themes if n.lower() == theme.lower()), "") or theme or (themes[0] if themes else "")
-    body = why + f"\n\n## Source\n\n1. <{url}>" + (f" (published {day})" if day else "")
+    earlier = earlier_report(agent.id, a.get("follows", ""), saved)
+    body = why + (f"\n\n**Follows up:** *{earlier.title}* ({earlier.found[:10]})" if earlier else "") \
+        + f"\n\n## Source\n\n1. <{url}>" + (f" (published {day})" if day else "")
     if plain(url) in read:
         body += "\n\n*Read by the agent.*"
     else:
@@ -864,14 +891,27 @@ def save_lead(agent, a, fetched, results, dates, saved, say, mine=None):
     n = 2
     while os.path.exists(os.path.join(stories_dir(agent.id), file)):
         file, n = f"{stamp}-{slug(title)}-{n}.md", n + 1
-    Story(agent.id, file, {"title": title, "theme": theme, "teaser": why, "status": "new",
-                           "found": time.strftime("%Y-%m-%d %H:%M"), "agent": agent.name, "kind": "lead"},
-          body).save()
+    meta = {"title": title, "theme": theme, "teaser": why, "status": "new",
+            "found": time.strftime("%Y-%m-%d %H:%M"), "agent": agent.name, "kind": "lead"}
+    if earlier:
+        meta["follows"] = earlier.file
+    Story(agent.id, file, meta, body).save()
     remember(agent.id, [url])
     mine.add(plain(url))
     saved.append(file)
-    say(f"  lead: {title} [{theme}]" + ("" if plain(url) in read else " (from results)"))
-    return f"Saved lead \"{title}\"."
+    say(f"  lead: {title} [{theme}]" + ("" if plain(url) in read else " (from results)")
+        + (f" ↳ follows {earlier.title}" if earlier else ""))
+    return f"Saved lead \"{title}\"." + (f" It follows up \"{earlier.title}\"." if earlier else "")
+
+
+def earlier_report(aid, title, saved=()):
+    """The earlier report (not one of this run's) a lead says it follows, by its title, or None."""
+    want = " ".join(str(title or "").split()).lower().strip(" \"'")
+    if not want:
+        return None
+    known = [s for s in stories(aid) if s.file not in saved]
+    return next((s for s in known if s.title.lower() == want), None) or \
+        next((s for s in known if want in s.title.lower() or s.title.lower() in want), None)
 
 
 def research_dir(aid):

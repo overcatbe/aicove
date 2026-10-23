@@ -166,6 +166,9 @@ status, theme and agent. A report has a title, a teaser, the article, its source
 the agent really read in that run) and a list of facts to check, each with the number of its
 source.
 
+- **↳ follows up:** a lead that continues an earlier report (a reply, a consequence, the same
+  people days later) names it; the agent sees what it reported in the last three weeks. **Work on
+  it…** and **Write it with…** then hand over both reports, so the connection comes along.
 - **Work on it…** starts a new chat with a persona you pick (the theme's persona if it has
   one, else Writing Buddy), Web on, with the report typed into the input: add what you want
   and send.
