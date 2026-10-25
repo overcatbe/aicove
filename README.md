@@ -276,8 +276,16 @@ anything else set the GPU memory by hand on the Settings tab.
 
 ## License
 
-BSD-3-Clause with one addition (clause 4): the "AIcove" name and branding may not be
-removed or replaced without written permission. See [LICENSE](LICENSE).
+AIcove is free software under the [GNU GPL v3](LICENSE) or later, with three additional
+terms under its section 7 (see [NOTICE](NOTICE)):
+
+- **Credit stays**: every copy, changed or not, keeps "AIcove, originally by overcat.be
+  (https://aicove.dev)" in its documentation and wherever it names its authors.
+- **Changes are marked**: a modified version says it is changed and doesn't claim to be AIcove.
+- **Forks get their own name**: the license gives no rights to the name "AIcove" or its logo.
+  A modified version needs another name and logo; unmodified copies may keep them.
+
+So you may use, study, change and share AIcove freely, and what you build on it stays free too.
 
 ## Made with
 

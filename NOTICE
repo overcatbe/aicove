@@ -1,0 +1,27 @@
+AIcove
+Copyright (C) 2026 overcat.be <mi@overcat.be>
+https://aicove.dev
+
+This program is free software: you can redistribute it and/or modify it under the terms of
+the GNU General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version, with the additional terms below.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License (the file LICENSE) for more details.
+
+
+Additional terms (GNU GPL version 3, section 7)
+
+1. Author attribution (section 7 b). Every copy you convey, changed or not, must keep this
+   notice: "AIcove, originally by overcat.be (https://aicove.dev)". Keep it in this file and in
+   the documentation (README or what takes its place), and in any part of the program's
+   interface that names its authors or credits.
+
+2. Marking changes (section 7 c). A modified version must say plainly that it is changed from
+   the original and must not claim to be the original AIcove.
+
+3. Name and logo (section 7 e). This license grants no rights to the name "AIcove" or to its
+   logo. A modified version that you convey must carry another name and another logo, and
+   keep the attribution of term 1. Unmodified copies may be passed on under the AIcove name
+   and logo.
