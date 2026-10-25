@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+# make-wiki [folder] [--push]: the GitHub wiki made from the guide in the app (cove/data/guide.md),
+# one page per "## " topic, "Start here" as Home, CHANGES.md (if there is one) as What's new,
+# and a sidebar. The guide is the one source:
+# change it, not the wiki, and run this again.
+#   folder   where the pages go (default: ../<repo>.wiki next to this repository)
+#   --push   then commit and push them (the folder must be a clone of the wiki)
+
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GUIDE = os.path.join(HERE, "cove", "data", "guide.md")
+CHANGES = os.path.join(HERE, "CHANGES.md")
+NOTE = "\n\n---\n*Made from the guide inside AIcove (`cove/data/guide.md`); it opens with the **?** button.*\n"
+
+
+def page(title):
+    return "Home" if title == "Start here" else re.sub(r"[^\w-]+", "-", title).strip("-")
+
+
+def pages(text):
+    """[(title, body)] of the guide's topics."""
+    parts = re.split(r"(?m)^## (.+)\n", text)
+    return [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts), 2)]
+
+
+def links(body, titles):
+    """"the topic *Chat*" -> a link to that page."""
+    def link(m):
+        t = m.group(2)
+        return f"{m.group(1)}[{t}]({page(t)})" if t in titles else m.group(0)
+    return re.sub(r"(topics? )\*([^*]+)\*", link, body)
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    out = args[0] if args else os.path.join(os.path.dirname(HERE), os.path.basename(HERE) + ".wiki")
+    with open(GUIDE, encoding="utf-8") as f:
+        topics = pages(f.read())
+    titles = {t for t, _ in topics}
+    os.makedirs(out, exist_ok=True)
+    made = set()
+    side = [f"- [{t}]({page(t)})" for t, _ in topics]
+    if os.path.exists(CHANGES):
+        with open(CHANGES, encoding="utf-8") as f:
+            changes = f.read().strip()
+        with open(os.path.join(out, "Changes.md"), "w", encoding="utf-8") as f:
+            f.write(re.sub(r"^# What's new\s*\n", "", changes) + "\n\n---\n*Made from `CHANGES.md` in the repository.*\n")
+        made.add("Changes.md")
+        side.insert(1, "- [What's new](Changes)")
+    for title, body in topics:
+        name = page(title) + ".md"
+        with open(os.path.join(out, name), "w", encoding="utf-8") as f:
+            f.write((f"# {title}\n\n" if title != "Start here" else "") + links(body, titles) + NOTE)
+        made.add(name)
+    with open(os.path.join(out, "_Sidebar.md"), "w", encoding="utf-8") as f:
+        f.write("**AIcove**\n\n" + "\n".join(side) + "\n")
+    made.add("_Sidebar.md")
+    for name in os.listdir(out):
+        if name.endswith(".md") and name not in made:
+            os.remove(os.path.join(out, name))
+    print(f"{len(topics)} pages in {out}")
+    if "--push" in sys.argv:
+        run = lambda *a: subprocess.run(["git", "-C", out, *a], check=True)
+        run("add", "-A")
+        if subprocess.run(["git", "-C", out, "diff", "--cached", "--quiet"]).returncode:
+            run("commit", "-q", "-m", "Wiki made from the guide")
+            run("push", "-q")
+            print("pushed")
+        else:
+            print("nothing changed")
+
+
+if __name__ == "__main__":
+    main()

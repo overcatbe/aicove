@@ -23,7 +23,7 @@ import zlib
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtCore import QBuffer, QIODevice, QLocale, QObject, QProcess, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase, QIcon, QImage, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
@@ -31,9 +31,9 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import fetch, personas, server, settings, tools, voice
+from . import fetch, gui_state, personas, profiles, server, settings, sync, tools, voice
 from . import launchers as launcher_files
-from .gui_chat import FACE_SIZE, ChatTab, face
+from .gui_chat import FACE_SIZE, ChatTab, face, square_png
 from .gui_agents import AgentsTab
 from .gui_docs import DocsTab
 from .gui_passwords import PasswordsTab
@@ -696,6 +696,37 @@ class Follow(QObject):
         self.done.emit(off)
 
 
+class Syncer(QObject):
+    """Keeps the AIcove folder and its stories in step with the other machines (sync.py): when
+    the window opens, on "Update from other machines", and once what changed here has been left
+    alone for a minute. A plain thread like Follow; the result reaches the window as a signal."""
+    done = pyqtSignal(list, list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.busy = False
+        self.last = ""
+
+    def start(self, force=True):
+        if not self.busy:
+            self.busy = True
+            threading.Thread(target=self.run, args=(force,), daemon=True).start()
+
+    def run(self, force):
+        lines, changed = [], []
+        try:
+            now = sync.pending()
+            # Unforced: only once the same changes have stood for a whole round.
+            if force or (now and now == self.last):
+                lines, changed = sync.sync()
+                now = sync.pending()
+            self.last = now
+        except Exception as e:
+            lines = [f"Sync: {e}"]
+        self.busy = False
+        self.done.emit(lines, changed)
+
+
 class NoWheel:
     """Spin boxes and combos inside the scrolling form: the wheel scrolls the form, not the value."""
 
@@ -1224,6 +1255,11 @@ class ToolDialog(QDialog):
                          "Letters, digits, . _ -")
         self.short.setEnabled(tool is None)
         self.desc = row("Description", QLineEdit(v.get("desc", "")))
+        self.group = row("Group", QComboBox(), "Optional: the heading it is listed under in the Tools tab. "
+                         "Pick one or type a new one; empty = \"Other\".")
+        self.group.setEditable(True)
+        self.group.addItems([""] + sorted({t.group for t in tools.find_tools() if t.group}, key=str.lower))
+        self.group.setCurrentText(v.get("group", ""))
         self.start = row("Start command", QLineEdit(v.get("start", "")), "A shell command.")
         self.stop = row("Stop command", QLineEdit(v.get("stop", "")),
                         "Empty = the start command is the program itself: AIcove keeps it running "
@@ -1272,6 +1308,7 @@ class ToolDialog(QDialog):
         name = self.short.text().strip()
         values = {
             "title": self.title.text().strip() or name, "desc": self.desc.text().strip(),
+            "group": self.group.currentText().strip(),
             "start": self.start.text().strip(), "stop": self.stop.text().strip(),
             "folder": self.folder.text().strip(), "address": self.address.text().strip(),
             "terminal": self.terminal.isChecked(), "with_all": self.with_all.isChecked(),
@@ -1478,6 +1515,8 @@ class Window(QMainWindow):
         self.follow = Follow(self)
         self.follow.news.connect(self.follow_done)
         self.follow.done.connect(self.follow_finished)
+        self.syncer = Syncer(self)
+        self.syncer.done.connect(self.synced)
 
         central = QWidget()
         cbox = QVBoxLayout(central)
@@ -1501,6 +1540,10 @@ class Window(QMainWindow):
 
         self.reload_list()
         self.follow.start()
+        self.syncer.start()
+        self.sync_timer = QTimer(self)
+        self.sync_timer.timeout.connect(lambda: self.syncer.start(force=False))
+        self.sync_timer.start(60000)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
@@ -1512,7 +1555,8 @@ class Window(QMainWindow):
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is self.agents_tab
                                          and not self.agents_tab.dirty() and self.agents_tab.reload())
         self.writing_tab = WritingTab(self)
-        self.tabs.insertTab(2, self.writing_tab, "Writing")
+        # Chat, Agents, Personas, Launchers, Writing, then the rest.
+        self.tabs.insertTab(self.tabs.indexOf(self.persona_page) + 2, self.writing_tab, "Writing")
         self.tabs.currentChanged.connect(lambda i: self.tabs.widget(i) is not self.writing_tab
                                          and self.writing_tab.leave())
         self.tabs.setCurrentIndex(0)
@@ -1643,12 +1687,18 @@ class Window(QMainWindow):
     def on_select(self, cur, prev):
         if self.switching or cur is None:
             return
-        if prev is not None and self.launcher is not None and self.dirty() and not self.resolve_unsaved():
-            self.switching = True
-            self.list.setCurrentItem(prev)
-            self.switching = False
+        wanted = cur.data(Qt.ItemDataRole.UserRole)
+        if prev is not None and self.launcher is not None and self.dirty():
+            if not self.resolve_unsaved():
+                self.switching = True
+                self.list.setCurrentItem(prev)
+                self.switching = False
+                return
+            # Saving fills the list again, which deletes cur and picks the saved one: pick the
+            # wanted one in the new list.
+            self.reload_list(select=wanted.name)
             return
-        self.load(cur.data(Qt.ItemDataRole.UserRole))
+        self.load(wanted)
 
     def load(self, launcher):
         self.loading = True
@@ -1858,6 +1908,7 @@ class Window(QMainWindow):
                      + ", ".join(removed))
 
     def update_remote(self):
+        self.syncer.start()
         if not launcher_files.hosts():
             QMessageBox.information(self, "Update", "No launchers of another machine yet: "
                                     "add one with \"From another machine…\".")
@@ -1865,6 +1916,19 @@ class Window(QMainWindow):
         self.update_btn.setEnabled(False)
         self.say(f"Asking {', '.join(launcher_files.hosts())}...")
         self.follow.start()
+
+    def synced(self, lines, changed):
+        """A sync is done: say what happened, and show what the other machines changed."""
+        for line in lines:
+            self.say(line)
+        if not changed:
+            return
+        if not self.persona_dirty():
+            self.reload_personas(select=self.persona.id if self.persona else None)
+        if not self.chat_tab.worker:
+            self.chat_tab.reload()
+        if not self.agents_tab.dirty():
+            self.agents_tab.reload()
 
     def follow_finished(self, off):
         if not self.update_btn.isEnabled():
@@ -2063,6 +2127,7 @@ class Window(QMainWindow):
             launcher_files.skip_remote(self.launcher)
             self.say(f"It won't come back from {self.launcher.host} (unless you add {self.launcher.host} again "
                      "with \"From another machine…\").")
+        self.drop_profiles(self.launcher.name)
         if drop_files:
             for f in own:
                 try:
@@ -2365,9 +2430,40 @@ class Window(QMainWindow):
         hint.setEnabled(False)
         picture.addWidget(hint, 1)
         # Same fields as the launcher's writing style, two side by side to leave room for the prompt.
-        samplers = QGroupBox("Settings for this persona — ticked ones win over the launcher's, "
-                             "on any model")
+        samplers = QGroupBox("Settings for this persona")
         sgrid = QGridLayout(samplers)
+        # Which settings the fields show: the persona's own (every model), or what differs on one
+        # model on this machine (profiles.py).
+        self.p_base, self.p_prof, self.p_used, self.p_forgotten = {}, {}, {}, set()
+        self.p_votes = {}
+        self.p_target, self.p_switching = "", False
+        self.p_profile = Combo()
+        self.p_profile.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.p_profile.setToolTip("All models: the persona's own settings. A model: what is different when "
+                                  "it runs on that one, on this machine")
+        self.p_profile.currentIndexChanged.connect(self.switch_profile)
+        self.p_forget_btn = QPushButton("Forget this model")
+        self.p_forget_btn.setToolTip("Remove this model's settings for the persona (on Save)")
+        self.p_forget_btn.clicked.connect(self.forget_profile)
+        self.p_clean_btn = QPushButton("Clean up…")
+        self.p_clean_btn.setToolTip("Forget the models this persona hasn't run on here for 30 days (on Save)")
+        self.p_clean_btn.clicked.connect(self.clean_profiles)
+        self.p_take_btn = QPushButton("Take these")
+        self.p_take_btn.setToolTip("Use the other machine's settings for this model here")
+        self.p_take_btn.clicked.connect(self.take_profile)
+        self.p_profile_info = QLabel()
+        self.p_profile_info.setWordWrap(True)
+        self.p_profile_info.setEnabled(False)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Settings for:"))
+        profile_row.addWidget(self.p_profile, 1)
+        profile_row.addWidget(self.p_forget_btn)
+        profile_row.addWidget(self.p_clean_btn)
+        sgrid.addLayout(profile_row, 0, 0, 1, 6)
+        info_row = QHBoxLayout()
+        info_row.addWidget(self.p_profile_info, 1)
+        info_row.addWidget(self.p_take_btn)
+        sgrid.addLayout(info_row, 1, 0, 1, 6)
         presets = QHBoxLayout()
         presets.addWidget(QLabel("Writing style at once:"))
         for name in PRESETS:
@@ -2375,7 +2471,7 @@ class Window(QMainWindow):
             b.clicked.connect(lambda _, n=name: self.apply_persona_preset(n))
             presets.addWidget(b)
         presets.addStretch(1)
-        sgrid.addLayout(presets, 0, 0, 1, 5)
+        sgrid.addLayout(presets, 2, 0, 1, 5)
         sgrid.setColumnMinimumWidth(2, 30)
         sgrid.setColumnStretch(5, 1)
         self.p_rows = {}
@@ -2388,8 +2484,8 @@ class Window(QMainWindow):
             row.widget.setToolTip(spec["hint"])
             row.widget.setMinimumWidth(110)
             self.p_rows[keys[spec["flag"]]] = row
-            sgrid.addWidget(row.check, 1 + i % half, 3 * (i // half))
-            sgrid.addWidget(row.widget, 1 + i % half, 3 * (i // half) + 1)
+            sgrid.addWidget(row.check, 3 + i % half, 3 * (i // half))
+            sgrid.addWidget(row.widget, 3 + i % half, 3 * (i // half) + 1)
         note = QLabel(
             "Start loads this persona's model. To talk to it, use the Chat tab, which loads the "
             "model by itself when needed.")
@@ -2477,13 +2573,18 @@ class Window(QMainWindow):
     def on_persona_select(self, cur, prev):
         if self.p_switching or cur is None:
             return
-        if prev is not None and self.persona_dirty() \
-                and not self.resolve_unsaved(self.persona.name, self.save_persona):
-            self.p_switching = True
-            self.p_list.setCurrentItem(prev)
-            self.p_switching = False
+        wanted = cur.data(Qt.ItemDataRole.UserRole)
+        if prev is not None and self.persona_dirty():
+            if not self.resolve_unsaved(self.persona.name, self.save_persona):
+                self.p_switching = True
+                self.p_list.setCurrentItem(prev)
+                self.p_switching = False
+                return
+            # Saving fills the list again, which deletes cur and picks the saved persona again (the
+            # form stayed on it, so the next Save went to it): pick the wanted one in the new list.
+            self.reload_personas(select=wanted.id)
             return
-        self.load_persona(cur.data(Qt.ItemDataRole.UserRole))
+        self.load_persona(wanted)
 
     def load_persona(self, persona):
         self.persona = None
@@ -2502,6 +2603,7 @@ class Window(QMainWindow):
         self.p_launcher.setCurrentIndex(max(self.p_launcher.findData(wanted), 0))
         self.p_files.setCurrentIndex(max(self.p_files.findData(persona.files if persona else ""), 0))
         self.p_others = tuple(persona.models[1:]) if persona else ()
+        self.load_profiles(persona)
         self.fill_voices(persona.voice if persona else "")
         self.persona = persona
         # To notice at Save that the file was changed behind the form (a sync, an editor).
@@ -2534,7 +2636,7 @@ class Window(QMainWindow):
 
     def persona_state(self):
         return (self.p_name.text().strip(), self.p_system.toPlainText().strip(),
-                tuple((k, r.get()) for k, r in self.p_rows.items()), self.p_picture,
+                self.samplers_state(), self.p_picture,
                 self.p_launcher.currentData() or "", self.p_files.currentData() or "", self.p_others,
                 self.p_voice.currentData() or "")
 
@@ -2651,19 +2753,11 @@ class Window(QMainWindow):
                                               "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;All files (*)")
         if not path:
             return
-        image = QImage(path)
-        if image.isNull():
+        data = square_png(path, PICTURE_SIZE)
+        if data is None:
             QMessageBox.warning(self, "Picture", f"Can't read {path} as an image.")
             return
-        # Fill the square and cut off what sticks out, so nothing gets squeezed.
-        image = image.scaled(PICTURE_SIZE, PICTURE_SIZE, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                             Qt.TransformationMode.SmoothTransformation)
-        image = image.copy((image.width() - PICTURE_SIZE) // 2, (image.height() - PICTURE_SIZE) // 2,
-                           PICTURE_SIZE, PICTURE_SIZE)
-        buffer = QBuffer()
-        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buffer, "PNG")
-        self.p_picture = bytes(buffer.data())
+        self.p_picture = data
         self.persona_changed()
 
     def unpick_picture(self):
@@ -2694,6 +2788,200 @@ class Window(QMainWindow):
         for flag, key in PERSONA_SAMPLERS.items():
             self.p_rows[key].set(PRESETS[name].get(flag))
         self.persona_changed()
+
+    # --- its settings per model (profiles.py) -------------------------------------------
+
+    def load_profiles(self, persona):
+        """Fill the per-model part from the file, showing the persona's own settings."""
+        self.p_base = {k: r.get() for k, r in self.p_rows.items() if r.get() is not None}
+        found = profiles.read(persona.id) if persona else {}
+        self.p_prof = {l: dict(e["samplers"]) for l, e in found.items()}
+        self.p_used = {l: e["used"] for l, e in found.items()}
+        self.p_votes = {l: (e["up"], e["down"]) for l, e in found.items()}
+        self.p_forgotten = set()
+        self.p_target = ""
+        self.fill_profiles()
+        self.show_profile_info()
+
+    def fill_profiles(self):
+        """All models first, then the models it has run on or has settings for (last used first),
+        then the other launchers."""
+        self.p_switching = True
+        self.p_profile.clear()
+        self.p_profile.addItem("All models: the persona's own settings", "")
+        known = sorted(set(self.p_prof) | set(self.p_used), key=lambda l: (self.p_used.get(l, ""), l), reverse=True)
+        for l in known:
+            bits = ([f"used {self.p_used[l]}"] if self.p_used.get(l) else []) \
+                + ([f"{len(self.p_prof[l])} own setting{'s' if len(self.p_prof[l]) != 1 else ''}"]
+                   if self.p_prof.get(l) else []) \
+                + [" ".join(f"{mark} {n}" for mark, n in zip("👍👎", self.p_votes.get(l, (0, 0))) if n)]
+            bits = [b for b in bits if b]
+            if l not in self.p_launchers:
+                # Gone, or its machine is off: greyed, kept until forgotten.
+                bits.append("not here now")
+            self.p_profile.addItem(f"{l}  ·  {', '.join(bits) or 'as the persona'}", l)
+            if l not in self.p_launchers:
+                self.p_profile.setItemData(self.p_profile.count() - 1, QBrush(self.palette().color(
+                    QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)), Qt.ItemDataRole.ForegroundRole)
+        rest = [l for l in self.p_launchers if l not in known]
+        if rest:
+            self.p_profile.insertSeparator(self.p_profile.count())
+            for l in rest:
+                self.p_profile.addItem(l, l)
+        self.p_profile.setCurrentIndex(max(self.p_profile.findData(self.p_target), 0))
+        self.p_switching = False
+
+    def flush_rows(self):
+        """What the fields say now, into the settings they show."""
+        values = {k: r.get() for k, r in self.p_rows.items() if r.get() is not None}
+        if not self.p_target:
+            self.p_base = values
+        elif values or self.p_target in self.p_prof:
+            self.p_prof[self.p_target] = values
+
+    def samplers_state(self):
+        if not self.p_switching:
+            self.flush_rows()
+        return (tuple(sorted(self.p_base.items())),
+                tuple(sorted((l, tuple(sorted(v.items()))) for l, v in self.p_prof.items() if v)),
+                tuple(sorted(self.p_forgotten)))
+
+    def show_rows(self, values):
+        self.p_switching = True
+        for key, row in self.p_rows.items():
+            row.set(values.get(key))
+        self.p_switching = False
+
+    def switch_profile(self, *_):
+        if self.p_switching or self.persona is None:
+            return
+        self.flush_rows()
+        self.p_target = self.p_profile.currentData() or ""
+        self.show_rows(self.p_prof.get(self.p_target, {}) if self.p_target else self.p_base)
+        self.show_profile_info()
+        self.persona_changed()
+
+    def other_profile(self):
+        """(machine, settings) of another machine for the shown model, or (None, {})."""
+        if not self.p_target or self.persona is None:
+            return None, {}
+        for who, found in profiles.others(self.persona.id).items():
+            # Here "laptop-qwen36" is that machine's "qwen36" (the host's name in front).
+            names = [self.p_target] + ([self.p_target[len(who) + 1:]] if self.p_target.startswith(who + "-") else [])
+            for name in names:
+                if found.get(name, {}).get("samplers"):
+                    return who, found[name]["samplers"]
+        return None, {}
+
+    def show_profile_info(self):
+        if not self.p_target:
+            text = ("Ticked ones win over the launcher's, on every model. Pick a model above to set "
+                    "what is different on that one.")
+        else:
+            text = (f"On {self.p_target}: ticked ones win over the persona's own settings; unticked = "
+                    f"as the persona's. Kept for {profiles.machine()} only.")
+        who, theirs = self.other_profile()
+        if who:
+            text += f"\nOn {who}: " + ", ".join(f"{k} {v}" for k, v in sorted(theirs.items()))
+        self.p_profile_info.setText(text)
+        self.p_take_btn.setVisible(bool(who))
+        self.p_forget_btn.setEnabled(bool(self.p_target) and
+                                     (self.p_target in self.p_prof or self.p_target in self.p_used))
+        self.p_clean_btn.setEnabled(self.persona is not None and bool(self.p_prof or self.p_used))
+
+    def forget_profile(self):
+        if not self.p_target:
+            return
+        self.p_prof.pop(self.p_target, None)
+        self.p_used.pop(self.p_target, None)
+        self.p_forgotten.add(self.p_target)
+        self.show_rows({})
+        self.fill_profiles()
+        self.show_profile_info()
+        self.persona_changed()
+
+    def clean_profiles(self):
+        old = profiles.stale({l: {"used": self.p_used.get(l, "")} for l in set(self.p_prof) | set(self.p_used)})
+        if not old:
+            QMessageBox.information(self, "Clean up", "Nothing to clean up: it ran on each of its models "
+                                    "in the last 30 days.")
+            return
+        lines = [f"{l}: {'used ' + self.p_used[l] if self.p_used.get(l) else 'never used'}"
+                 + (", has its own settings" if self.p_prof.get(l) else "") for l in old]
+        if QMessageBox.question(
+                self, "Clean up", f"{self.persona.name} hasn't run on these here for 30 days:\n\n"
+                + "\n".join(lines) + "\n\nForget them? (On Save; the other machines' files stay.)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.flush_rows()
+        for l in old:
+            self.p_prof.pop(l, None)
+            self.p_used.pop(l, None)
+            self.p_forgotten.add(l)
+        if self.p_target in old:
+            self.p_target = ""
+            self.show_rows(self.p_base)
+        self.fill_profiles()
+        self.show_profile_info()
+        self.persona_changed()
+
+    def drop_profiles(self, name):
+        """A launcher was deleted: offer to delete the personas' settings for it on this machine."""
+        held = profiles.holders(name)
+        own = [personas.load_all()[pid].name or pid for pid, s in held.items() if s]
+        if own and QMessageBox.question(
+                self, "Delete launcher", f"{', '.join(own)} {'has' if len(own) == 1 else 'have'} own settings "
+                f"for {name} on this machine. Delete those too?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            profiles.drop(name)
+        except OSError as e:
+            self.say(f"Can't delete the personas' settings for {name}: {e}")
+            return
+        if held:
+            self.say(f"Deleted the personas' settings for {name}")
+        # The open form must not write it back at its next Save.
+        if self.persona is not None and (name in self.p_prof or name in self.p_used):
+            clean = not self.persona_dirty()
+            self.flush_rows()
+            self.p_prof.pop(name, None)
+            self.p_used.pop(name, None)
+            if self.p_target == name:
+                self.p_target = ""
+                self.show_rows(self.p_base)
+            self.fill_profiles()
+            self.show_profile_info()
+            if clean:
+                self.p_baseline = self.persona_state()
+            self.persona_changed()
+
+    def profile_kept(self, pid, name, samplers):
+        """The chat's "Keep for" wrote a model's settings: the Personas tab must show them, and not
+        put its older copy back at the next Save."""
+        if self.persona is None or self.persona.id != pid:
+            return
+        if not self.persona_dirty():
+            self.load_persona(self.persona)
+            return
+        self.flush_rows()
+        self.p_prof[name] = dict(samplers)
+        self.p_forgotten.discard(name)
+        if self.p_target == name:
+            self.show_rows(samplers)
+        self.fill_profiles()
+        self.show_profile_info()
+        self.persona_changed()
+
+    def take_profile(self):
+        who, theirs = self.other_profile()
+        if who:
+            self.show_rows(theirs)
+            self.flush_rows()
+            self.show_profile_info()
+            self.persona_changed()
 
     def persona_dirty(self):
         return self.persona is not None and self.persona_state() != self.p_baseline
@@ -2816,9 +3104,11 @@ class Window(QMainWindow):
         self.persona.models = [launcher] + [o for o in others if o != launcher] if launcher else []
         self.persona.files = files
         self.persona.voice = voice_
-        self.persona.samplers = {k: v for k, v in samplers if v is not None}
+        self.persona.samplers = dict(samplers[0])
         try:
             self.persona.write()
+            profiles.save_samplers(self.persona.id, {l: v for l, v in self.p_prof.items() if v or l in self.p_used},
+                                   self.p_forgotten)
             if picture:
                 personas.set_picture(self.persona.id, picture)
             elif picture is not None:
@@ -2829,6 +3119,7 @@ class Window(QMainWindow):
         self.say(f"Saved persona {self.persona.id}")
         self.p_seen = self.persona_stamp()
         self.p_picture = None
+        self.p_forgotten = set()
         self.p_baseline = self.persona_state()
         self.reload_personas()
         return True
@@ -2934,7 +3225,7 @@ class Window(QMainWindow):
 
     def tools_tab(self):
         """One row per tool file: state, name, Start / Stop / Open, its extra buttons, Edit."""
-        self.t_stamp, self.t_rows = None, []
+        self.t_stamp, self.t_rows, self.t_heads = None, [], []
         self.t_grid = QGridLayout()
         self.t_grid.setColumnStretch(1, 1)
         self.t_grid.setVerticalSpacing(10)
@@ -2966,44 +3257,77 @@ class Window(QMainWindow):
             item = self.t_grid.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        self.t_rows = []
-        for r, tool in enumerate(tools.find_tools()):
-            state = QLabel()
-            state.setMinimumWidth(90)
-            text = QLabel(f"<b>{html(tool.title)}</b>"
-                          + (f"<br>{html(tool.desc)}" if tool.desc else "")
-                          + (f"<br><span style='color:#c0392b'>{html(tool.error)}</span>" if tool.error else ""))
-            text.setTextFormat(Qt.TextFormat.RichText)
-            text.setWordWrap(True)
-            buttons = QHBoxLayout()
-            start = stop = open_btn = None
-            if tool.start and not tool.error:
-                start = QPushButton("Start")
-                start.clicked.connect(lambda _, t=tool: self.tool_action(t, "start"))
-                stop = QPushButton("Stop")
-                stop.clicked.connect(lambda _, t=tool: self.tool_action(t, "stop"))
-                buttons.addWidget(start)
-                buttons.addWidget(stop)
-            if tool.address and not tool.error:
-                open_btn = QPushButton("Open")
-                open_btn.clicked.connect(lambda _, t=tool: self.open_tool(t))
-                buttons.addWidget(open_btn)
-            for label, command in ([] if tool.error else tool.buttons):
-                b = QPushButton(label)
-                b.setToolTip(command)
-                b.clicked.connect(lambda _, t=tool, c=command, l=label: self.in_terminal(
-                    c, f"{t.title}: {l}", t.cwd() if t.folder else None))
-                buttons.addWidget(b)
-            edit = QPushButton("Edit…")
-            edit.clicked.connect(lambda _, n=tool.name: self.edit_tool(n))
-            buttons.addWidget(edit)
-            holder = QWidget()
-            holder.setLayout(buttons)
-            buttons.setContentsMargins(0, 0, 0, 0)
-            self.t_grid.addWidget(state, r, 0)
-            self.t_grid.addWidget(text, r, 1)
-            self.t_grid.addWidget(holder, r, 2, Qt.AlignmentFlag.AlignRight)
-            self.t_rows.append((tool, state, start, stop))
+        self.t_rows, self.t_heads = [], []
+        folded = set(gui_state.remembered("tool_groups_folded", []))
+        groups = tools.grouped()
+        r = 0
+        for group, members in groups:
+            head = None
+            if len(groups) > 1:
+                head = QPushButton()
+                head.setFlat(True)
+                head.setStyleSheet("text-align: left; font-weight: bold; padding: 4px 0")
+                head.clicked.connect(lambda _, g=group: self.fold_tools(g))
+                self.t_grid.addWidget(head, r, 0, 1, 3)
+                r += 1
+            widgets = []
+            for tool in members:
+                widgets += self.tool_row(tool, r)
+                r += 1
+            self.t_heads.append((group, head, members, widgets))
+            for w in widgets:
+                w.setVisible(group not in folded or head is None)
+
+    def tool_row(self, tool, r):
+        """The widgets of one tool in row r of the grid."""
+        state = QLabel()
+        state.setMinimumWidth(90)
+        text = QLabel(f"<b>{html(tool.title)}</b>"
+                      + (f"<br>{html(tool.desc)}" if tool.desc else "")
+                      + (f"<br><span style='color:#c0392b'>{html(tool.error)}</span>" if tool.error else ""))
+        text.setTextFormat(Qt.TextFormat.RichText)
+        text.setWordWrap(True)
+        buttons = QHBoxLayout()
+        start = stop = open_btn = None
+        if tool.start and not tool.error:
+            start = QPushButton("Start")
+            start.clicked.connect(lambda _, t=tool: self.tool_action(t, "start"))
+            stop = QPushButton("Stop")
+            stop.clicked.connect(lambda _, t=tool: self.tool_action(t, "stop"))
+            buttons.addWidget(start)
+            buttons.addWidget(stop)
+        if tool.address and not tool.error:
+            open_btn = QPushButton("Open")
+            open_btn.clicked.connect(lambda _, t=tool: self.open_tool(t))
+            buttons.addWidget(open_btn)
+        for label, command in ([] if tool.error else tool.buttons):
+            b = QPushButton(label)
+            b.setToolTip(command)
+            b.clicked.connect(lambda _, t=tool, c=command, l=label: self.in_terminal(
+                c, f"{t.title}: {l}", t.cwd() if t.folder else None))
+            buttons.addWidget(b)
+        edit = QPushButton("Edit…")
+        edit.clicked.connect(lambda _, n=tool.name: self.edit_tool(n))
+        buttons.addWidget(edit)
+        holder = QWidget()
+        holder.setLayout(buttons)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        self.t_grid.addWidget(state, r, 0)
+        self.t_grid.addWidget(text, r, 1)
+        self.t_grid.addWidget(holder, r, 2, Qt.AlignmentFlag.AlignRight)
+        self.t_rows.append((tool, state, start, stop))
+        return [state, text, holder]
+
+    def fold_tools(self, group):
+        """Fold a group of tools away, or open it again (remembered between runs)."""
+        folded = set(gui_state.remembered("tool_groups_folded", []))
+        folded ^= {group}
+        gui_state.remember("tool_groups_folded", sorted(folded))
+        for g, head, members, widgets in self.t_heads:
+            if g == group:
+                for w in widgets:
+                    w.setVisible(g not in folded)
+        self.refresh_tools()
 
     def refresh_tools(self):
         stamp = tools.stamp()
@@ -3011,9 +3335,10 @@ class Window(QMainWindow):
             # A tool was added, removed or edited (here or by hand).
             self.t_stamp = stamp
             self.build_tools()
-        up = []
+        up, states = [], {}
         for tool, label, start, stop in self.t_rows:
             state = None if tool.error else tool.state()
+            states[tool.name] = state
             mark, colour = {"running": ("● running", "#1e8449"), "starting": ("◌ starting", "#b9770e"),
                             "stopped": ("○ stopped", "")}.get(state, ("", ""))
             label.setText(mark)
@@ -3023,6 +3348,14 @@ class Window(QMainWindow):
             if start is not None and state is not None:
                 start.setEnabled(state == "stopped")
                 stop.setEnabled(state != "stopped")
+        folded = set(gui_state.remembered("tool_groups_folded", []))
+        for group, head, members, widgets in self.t_heads:
+            if head is None:
+                continue
+            running = sum(states.get(t.name) in ("running", "starting") for t in members)
+            shut = group in folded
+            head.setText(("▸ " if shut else "▾ ") + group
+                         + (f"  ({running} running)" if running and shut else ""))
         self.tools_label.setText("Tools running: " + ", ".join(up) if up else "")
         self.tools_label.setToolTip(self.tools_label.text())
 
@@ -3465,6 +3798,12 @@ class Window(QMainWindow):
         elif not self.writing_tab.leave():
             event.ignore()
         else:
+            if self.chat_tab.measuring is not None:
+                self.chat_tab.measuring.wait(3000)   # a thread still running when the window goes ends the program badly
+            if sync.synced(settings.COVE_DIR):
+                # The last changes go out on their own, so closing doesn't wait for the remote.
+                subprocess.Popen(cove_cmd("sync"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
             event.accept()
 
 

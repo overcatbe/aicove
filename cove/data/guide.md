@@ -8,8 +8,9 @@ you chat with, your other tools, and your passwords.
 To chat: the **Chat** tab. Pick a persona, write, press Enter. If its model isn't loaded,
 AIcove loads it first. See the topic *Chat*. When you are done: **Stop everything** (top right).
 
-Models are set up on the **Launchers** tab (a model file and how it runs), personas on the
-**Personas** tab (who you talk to, and on which models).
+The tabs: **Chat**, **Agents** (who works for you: news, research, your machines), **Personas**
+(who you talk and write with, and on which models), **Launchers** (a model file and how it
+runs), **Writing**, then the rest.
 
 Only one model is loaded at a time. Starting another one stops the one that was running.
 
@@ -30,12 +31,19 @@ chats of the one you picked; on the right the chat.
   set on the Personas tab); the list shows the ones this machine has. If another model is loaded,
   sending loads this one first (that stops the other). **Load** does it without sending.
 - **Stop** ends an answer early; what came so far is kept.
+- The box you write in can be made taller: drag the line above the Style menus (in the Writing
+  tab, the line above the box). AIcove keeps the size.
 - Under each message: **edit**, **delete**, and for the last answer **answer again**. Editing
   your own message offers **Save and answer again**: everything after it goes, and the persona
   answers anew.
 - **answer again** keeps the answer it replaces: **◀ 2/3 ▶** under the last answer switches
   between them, and the one shown is what the chat goes on with. When you write your next
   message, the others are dropped.
+- **again with…** does the same on another model, picked from a menu (it loads it if
+  needed). Each answer says which model wrote it.
+- **👍 / 👎** under an answer (the chosen one is shown bigger; click it again to take it back) are counted for the persona on
+  the answer's model; the Personas tab shows the counts under **Settings for:**, to see which
+  model suits it.
 - **Picture…** (or drop or paste a picture into the box) sends a picture with your message,
   for a model that can see: a launcher with an **eyes** file (mmproj), marked 👁 wherever models
   are listed. If the chosen model can't see, AIcove offers to load one that can; **Send
@@ -66,6 +74,9 @@ instead of them; the newest part stays word for word. The bar right of the menus
 it turns orange from 70%). It shows while the persona's model is loaded. The chat on screen
 stays complete:
 
+- **Summarise** next to the bar does it now, before the 70%: the older half of the chat (at
+  least) goes into the summary, the newer part stays. Handy before a long piece of work, or
+  before switching to a model with a smaller context.
 - The summary shows as **So far** at the top of the chat. **edit** it to correct or add what
   matters; **drop** it and the persona sees everything again (and makes a new summary when
   needed).
@@ -96,6 +107,10 @@ starts with *as set*.
 - **Thinking**: *on* or *off* for thinking models (off answers quicker). Greyed out when the
   model's thinking can't be switched.
 - **Length**: the longest an answer may get: short, medium or long.
+- **Keep for <model>** (shown when one of these three isn't *as set*): makes them the
+  persona's settings on the picked model, on this machine, so every chat with it on that model
+  gets them; the menus go back to *as set*. They show up on the Personas tab under
+  **Settings for:**.
 
 **Knowledge** is material a persona works from: notes, lore, books. Put the files into its
 `knowledge/` folder (**Knowledge…** at the top of the chat opens it; the button shows how many
@@ -111,7 +126,7 @@ are turned into text once and kept in `knowledge/.text/`. It works without file 
 **Web** above the input (off/on, per chat) lets the persona search the web and read pages:
 **▸ Searched the web for …** and **▸ Read …** show in the chat. It needs a model that can use
 tools; on one that can't, the menu is greyed out. Searching goes to DuckDuckGo, or to your own
-SearXNG if the `web_search` setting (Settings tab) is its address, e.g. `http://127.0.0.1:8888`.
+SearXNG if the `web_search` setting (Settings tab) is its address, e.g. `http://127.0.0.1:8888`. If that address is a tool of yours (Tools tab) that isn't running, the first search starts it.
 After many searches in a short time DuckDuckGo stops answering for a while; Wikipedia's search
 stands in until then. Pages on this computer or your home network can never be read, also not
 through a redirect, so a model can't reach llama-server or your router this way.
@@ -136,25 +151,41 @@ server running elsewhere (anything with the OpenAI image API). Needs a model tha
 
 ## Agents
 
-An agent is a persona with a standing task that works on its own and comes back with
-reports. The first one is a story hunter: it searches the web for stories on your themes and
-writes each one up as a small article with its sources and the facts to check.
+Personas are for talking and writing; agents are for jobs. An agent has a name, a picture and a
+job; it works on its own and comes back with reports, and you can talk with it about them in the
+Chat tab (agents are listed there below the personas). What it finds you then write with a
+persona: **Work on it…** (a chat) or **Write it with…** (the Writing tab). The first one is a
+story hunter: it searches the web for news on your themes and
+brings **leads**: a headline, a line or two on what it is and why it is interesting, and the
+link, many of them, for you to scan and pick from. Set its **sites** limit to 2 or more and it
+writes each story up instead, as a small article from that many different sites, with the facts
+to check.
 
 **Reports** shows what the agents brought, newest first; new ones in bold. Filter by
 status, theme and agent. A report has a title, a teaser, the article, its sources (only pages
 the agent really read in that run) and a list of facts to check, each with the number of its
 source.
 
+- **↳ follows up:** a lead that continues an earlier report (a reply, a consequence, the same
+  people days later) names it; the agent sees what it reported in the last three weeks. **Work on
+  it…** and **Write it with…** then hand over both reports, so the connection comes along.
 - **Work on it…** starts a new chat with a persona you pick (the theme's persona if it has
-  one, else Assistant), Web on, with the report typed into the input: add what you want
+  one, else the one you picked last time), Web on, with the report typed into the input: add what you want
   and send.
+- **Write it with…** makes a new project in the Writing tab with a persona you pick: the
+  report and its sources go on the project's **Plans** page, which the persona always reads;
+  chapter 1 starts empty.
 - **Keep** / **Used** / **Dismiss**: Dismiss takes it off the list (the file stays). Kept,
   used and dismissed stories go into the agent's next runs as your taste, more or less like
   them; nothing it reported before is reported again.
 
 **Agents** is where you set one up:
 
-- **Persona**: whose voice and facts it has. **Models**: the ticked launchers, in order. A
+- **Picture**: its face, in the lists and the chat (kept at once, no Save needed).
+- **Voice**: optional, how it talks if it has a character (a gruff ship's engineer). Only the
+  way it says things: its rules on facts and sources always come first. Empty = plain and
+  neutral, which is best for hunting.
+- **Models**: the ticked launchers, in order. A
   run uses the loaded model if it is one of them; with nothing loaded it starts the first one
   this machine has and stops it again afterwards. When another model is loaded (you are
   chatting) a scheduled run waits and tries again at the next check; **Run now** asks whether
@@ -163,14 +194,44 @@ source.
   `mon wed fri 08:30`. It only runs when **Run on schedule on this machine** is ticked: that
   puts one line in your crontab which runs `aicove agent due` every 10 minutes. A run missed
   while the machine was off is made up once.
-- **Style** (Factual is good for reports), **Thinking**, **Limits**: searches, pages read,
-  tool calls, minutes and stories per run.
+- **Style** (Factual is good for reports), **Thinking** (off makes a hunt for leads much faster),
+  **Limits**: searches, pages read, tool calls, minutes, stories or leads per run, and
+  **sites**: 1 = leads, 2 or more = written-up stories from that many sites. Each step of a run
+  may think for about 3000 words at most; a model cut off is told to act.
 - **Search from**: where its searches and page reads go out from. Normally the machine it runs
   on; or another machine of yours that ssh knows (a `Host` in `~/.ssh/config`) and that has a
   SearXNG as a user service on 127.0.0.1:8081. Then sites see that machine's address, not yours.
   Its SearXNG is started for the run if it isn't running, and stopped again afterwards.
 - **Themes**, one per line: `Name | what it means to you | persona to work on it with`.
 - **Task**: what it should do, in words.
+- **In the chat it may read files**: then, when you talk with it, it may read the files the
+  Settings tab allows (a system helper reads system files this way). Never write; runs never touch files.
+
+**Talking with an agent**: pick it in the Chat tab under **Agents**. It knows its job and its
+newest reports (and what you put in its `knowledge/` folder), answers in its voice, and with
+**Web** on it can check a report or dig deeper. A full run is still started here, with Run now
+or Research….
+
+**Research…** (next to Run now) gives the agent one topic to dig into instead: "cooking the
+perfect steak", "the history of the bicycle", a name, a question. Old sources are
+welcome there (archives, research, books, news of any year, fringe sites marked as fringe). It
+reads page after page and notes each source on a card (what the page says, what kind of source
+it is), then writes a **dossier** as its report: what is solid, what is disputed or only
+claimed and by whom, open questions, 3 to 5 proposed articles with angle, hook and sources, and
+all the source cards. On a dossier, **Write articles…** has a persona of your choice write
+articles from it (headline, teaser, text) in its own voice, facts only from the dossier's
+sources, with wishes like "in German, about 800 words"; they come under Reports too. Research
+runs are long: give it more searches, pages and minutes than a news hunt.
+
+A lead may come straight from a search result (the report shows what the result said, or that
+the agent read the page); its address must be one the search gave or a page it read. A written-up
+story stands on pages the agent read in that run, from as many different sites as **sites**
+says. Neither may be a front page (a front page only helps find articles) or older than 3 days
+when the page or its address says when it came out. A search for an old year ("October
+2024": models like the year they were trained in) is sent back. The agent is told today's and
+yesterday's date. For finding stories a plain voice works best: a character invents angles and
+critics; let a persona work on the story afterwards (the theme's persona, **Work on it…**,
+**Write it with…**).
 
 An agent may search the web and read pages, and save its reports in its own folder. Nothing
 else: no files of yours, no commands. Runs go on when the window is closed; **Stop** ends one.
@@ -182,6 +243,7 @@ on its own schedule; editing, Run now and the reports work from here over ssh. T
 are fetched when the window opens and on **Update from other machines**.
 
 Where they are: `~/AIcove/agents/<id>/`: `agent.txt` (the settings, by hand works too),
+`voice.txt`, `picture.png`, `chats/` and `knowledge/` like a persona's,
 `stories/` (one Markdown file per report), `seen.txt` (links already reported), `runs/` (a log
 per run).
 
@@ -214,7 +276,8 @@ and stops. While you write, nothing runs.
   as it is in the editor when you ask, saved or not.
 - **New chapter** goes after the selected one; ▲ ▼ move it; **Done** marks it finished for now
   (and tells you when its story memory is out of date; it starts nothing); **Remember** reads
-  it into the story memory; **Delete** moves it to the project's `.trash` folder.
+  it into the story memory; **Cast…** picks who is in the chapter (see Story memory);
+  **Delete** moves it to the project's `.trash` folder.
 - **Export…**: the whole project as one file: Markdown, plain text, a web page (HTML), PDF,
   an e-book (EPUB) or Word (.docx), each chapter starting on a new page where that exists.
   All chapters, or only those marked done. Needs no extra programs.
@@ -227,7 +290,12 @@ and stops. While you write, nothing runs.
 **Talking about the text** (the panel on the right): pick a persona (it is remembered per
 project) and press **Load** if its model isn't running. Make one of your own for this on the
 Personas tab, with the prompt that suits how you work: an editor, a writing partner, a critic.
-It reads the open chapter as it stands.
+It reads the open chapter as it stands. Each chapter has its own talk: go to another chapter
+and you get that one's; **New talk** deletes the chapter's talk and starts afresh. What
+should last beyond a talk goes into Style or Plans. A talk can grow as long as you like: the
+model gets its latest messages, as many as fit next to the chapter and the story memory (at
+most 12). On a chapter with text and no talk yet, the box holds your first prompt, ready for
+Enter: it is `~/AIcove/writing/first-prompt.txt`, change it there (empty: nothing).
 
 - **Select text first** to work on just that passage; with nothing selected, questions are
   about the whole chapter and new text goes in at the cursor.
@@ -266,6 +334,8 @@ It reads the open chapter as it stands.
   passage. **Try it** puts its alternative into the text as changes (red and green, to accept or
   decline); **Ask…** takes it into the talk; **Done**, **Dismiss** (not a problem here; a new
   Check doesn't bring it back), **Reopen**.
+- Notes are for the session: they stay while AIcove is open (also when you switch chapters)
+  and are gone when you close it. Run Check or Review again on the text as it is then.
 - Notes stay on their passage while you edit around and in them. When a passage is changed so
   much that the note no longer fits, the note becomes **outdated** and is no longer drawn in the
   text, instead of pointing at the wrong words.
@@ -299,9 +369,14 @@ each chapter once and keeps notes, and those go along with everything you ask in
   taste; not with English polish (which only fixes) or the memory reader (which only records).
 - **Plans (yours)**: where the story is going, what must not be forgotten. Only you write it;
   the models read it as plans, not as what happened.
-- What a model gets with every question: your style and plans, the cast, the threads and the chapter
-  notes (only their summaries, or only the chapters near the open one, when the model's context
-  is small), next to the open chapter itself.
+- **Cast…** (under the chapter list): tick who is in the chapter, and only their cast entries
+  go along with it, plus anyone you name in your message. Without a pick, the people whose name
+  comes up in the chapter go along (a name in the `## ` heading, in its (brackets), or a
+  `**Name:**` line under one; a name part two entries share counts for neither). **By names**
+  goes back to that.
+- What a model gets with every question: your style and plans, the cast of the chapter, the
+  threads and the chapter notes (only their summaries and facts, or only the chapters near the
+  open one, when the model's context is small), next to the open chapter itself.
 
 **The changes**: nothing a model writes is in your chapter until you accept it. Put the cursor
 in a change or right-click it: **✓ Accept**, **✗ Decline**, **✎ Edit…** (change it, then
@@ -314,7 +389,7 @@ chapter has. You can type around them as usual.
 Where it is: `~/AIcove/writing/<project>/`: `project.txt` (title, the chapters in order, draft
 or done, the persona), `chapters/c001.md` …, `bible/` (the story memory: `chapters/` notes,
 `cast.md`, `threads.md`, `style.md`, `plans.md`), `suggestions/` (the changes waiting),
-`review/` (the notes), `talk/` (the talks). The templates are in `~/AIcove/writing/templates/`,
+`talk/` (the talks). The templates are in `~/AIcove/writing/templates/`,
 the slop list is `~/AIcove/writing/slop.txt`. Files can be edited by hand too; a chapter file
 put there joins at the end.
 
@@ -332,6 +407,14 @@ A persona is a name, a picture, a prompt and a few settings, tied to the launche
 - **Settings for this persona** (Thinking, Max answer length, temperature and so on) apply
   whenever the persona is used. Who wins: the persona, then the launcher, then llama-server's
   default.
+- **Settings for:** picks whose settings the fields show: *All models* (the persona's own), or
+  one model, where ticked ones win over the persona's own when it runs on that model. A model
+  is listed at the top once the persona has answered on it, with the day it last did. These
+  are kept per machine (`personas/<id>/models/<machine>.toml`); what another machine set for
+  the model is shown below, and **Take these** copies it here. *not here now* means the
+  launcher is gone or its machine is off; its settings stay until you forget them.
+  **Forget this model** drops one, **Clean up…** those the persona hasn't run on here for
+  30 days (both on Save). Deleting a launcher asks whether its settings go too.
 - Give every persona a **Max answer length**. Without one, a model that starts repeating itself
   writes until the context is full.
 - **Export…** saves a persona as one `.zip`: to keep, to move to another machine, or to give

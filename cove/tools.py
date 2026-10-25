@@ -4,6 +4,7 @@
 #
 #   name: Voice configurator                what the window calls it
 #   description: VoxCPM2, pick and tune voices
+#   group: Voice                            optional: the heading it is listed under ("Other" without one)
 #   start: tts-env/bin/python voxcpm_config_ui.py    a shell command
 #   stop:                                   a shell command; without one AIcove keeps the program
 #                                           running itself and ends it on Stop
@@ -42,7 +43,7 @@ def path_of(name):
 def text_of(v):
     """What goes into a tool file. v has the fields of a Tool (title, desc, start, ...)."""
     lines = [f"name: {v['title']}"]
-    for key, field in (("description", "desc"), ("start", "start"), ("stop", "stop"),
+    for key, field in (("description", "desc"), ("group", "group"), ("start", "start"), ("stop", "stop"),
                        ("folder", "folder"), ("address", "address")):
         if v.get(field):
             lines.append(f"{key}: {v[field]}")
@@ -81,6 +82,7 @@ class Tool:
                     fields[key] = value
         self.title = fields.get("name") or self.name
         self.desc = fields.get("description", "")
+        self.group = fields.get("group", "")
         self.start = fields.get("start", "")
         self.stop = fields.get("stop", "")
         self.folder = fields.get("folder", "")
@@ -97,7 +99,7 @@ class Tool:
             self.error = f"the folder {self.folder} doesn't exist"
 
     def values(self):
-        return {k: getattr(self, k) for k in ("title", "desc", "start", "stop", "folder", "address",
+        return {k: getattr(self, k) for k in ("title", "desc", "group", "start", "stop", "folder", "address",
                                               "terminal", "with_all", "not_with", "not_with_model",
                                               "buttons")}
 
@@ -187,6 +189,18 @@ def find_tools():
             except (OSError, UnicodeDecodeError):
                 continue
     return sorted(found, key=lambda t: t.title.lower())
+
+
+OTHER = "Other"
+
+
+def grouped(found=None):
+    """The tools as [(group, [tools])]: groups by name, the ones without a group last as "Other"."""
+    found = find_tools() if found is None else found
+    groups = {}
+    for tool in found:
+        groups.setdefault(tool.group or OTHER, []).append(tool)
+    return sorted(groups.items(), key=lambda g: (g[0] == OTHER, g[0].lower()))
 
 
 def get(name):
@@ -347,9 +361,13 @@ def show(say=print):
     found = find_tools()
     if not found:
         say(f"No tools yet. Add one in the window (Tools tab) or as a file in {TOOL_DIR}.")
-    for tool in found:
-        state = tool.error or tool.state() or "-"
-        say(f"  {tool.name:22} {state:10} {tool.title}" + (f"  {tool.address}" if tool.address else ""))
+    groups = grouped(found)
+    for group, members in groups:
+        if len(groups) > 1:
+            say(f"{group}:")
+        for tool in members:
+            state = tool.error or tool.state() or "-"
+            say(f"  {tool.name:22} {state:10} {tool.title}" + (f"  {tool.address}" if tool.address else ""))
 
 
 def main(argv):

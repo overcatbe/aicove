@@ -1,7 +1,8 @@
 # Writing: long texts (a novel, a fic) as projects of chapters, one Markdown file each, in the
 # AIcove folder:
 #   writing/<id>/project.txt          title:, author:, git:, then one "chapter: <file> | <status>" line
-#                                     per chapter, in reading order
+#                                     per chapter, in reading order, and "cast: <file> | V, Jackie Welles"
+#                                     for a chapter whose cast you picked
 #   writing/<id>/chapters/c001.md     the text; its first "# " line is the chapter's title, then one
 #                                     line per paragraph (an empty line is extra space you put there)
 #   writing/<id>/.trash/              deleted chapters
@@ -74,6 +75,8 @@ class Project:
         self.git = True
         # [[file, status]] in reading order
         self.chapters = []
+        # file -> the cast entries you picked for that chapter (without: found by their names)
+        self.cast = {}
 
     @property
     def path(self):
@@ -101,6 +104,10 @@ class Project:
                 file, _, status = (v.strip() for v in value.partition("|"))
                 if CHAPTER_FILE.fullmatch(file) and file not in (c[0] for c in p.chapters):
                     p.chapters.append([file, status if status in STATUSES else "draft"])
+            elif key == "cast":
+                file, _, names = (v.strip() for v in value.partition("|"))
+                if CHAPTER_FILE.fullmatch(file):
+                    p.cast[file] = [n.strip() for n in names.split(",") if n.strip()]
         return p
 
     @classmethod
@@ -123,6 +130,7 @@ class Project:
             + ([f"memory model: {self.memory_model}"] if self.memory_model else []) \
             + [f"paragraphs: {self.paragraphs}", f"git: {'on' if self.git else 'off'}", ""]
         lines += [f"chapter: {file} | {status}" for file, status in self.chapters]
+        lines += [f"cast: {file} | {', '.join(self.cast[file])}" for file, _ in self.chapters if file in self.cast]
         return "\n".join(lines) + "\n"
 
     def write(self):
@@ -178,6 +186,7 @@ class Project:
         if os.path.exists(path):
             os.replace(path, os.path.join(trash, f"{file[:-3]}-{time.strftime('%Y%m%d-%H%M%S')}.md"))
         self.chapters = [c for c in self.chapters if c[0] != file]
+        self.cast.pop(file, None)
         self.write()
         if os.path.exists(suggestions_path(self, file)):
             os.remove(suggestions_path(self, file))
@@ -716,6 +725,17 @@ def export(path, kind, title, chapters, author=""):
 # Nothing the model writes reaches a chapter file before it is accepted.
 
 TEMPLATE_DIR = os.path.join(WRITING_DIR, "templates")
+# What the talk box holds ready on a chapter with text and no talk yet (empty file: nothing).
+FIRST_FILE = os.path.join(WRITING_DIR, "first-prompt.txt")
+FIRST = "Please read this chapter.\nPerhaps we need more sensory details and polish the dialogues?\nYour verdict first please.\n"
+
+
+def first_prompt():
+    if not os.path.exists(FIRST_FILE):
+        os.makedirs(WRITING_DIR, exist_ok=True)
+        with open(FIRST_FILE, "w", encoding="utf-8") as f:
+            f.write(FIRST)
+    return read_page(FIRST_FILE).strip()
 REWRITE = re.compile(r"<rewrite>\s*(.*?)\s*(?:</rewrite>|$)", re.S)
 # A passage of the chapter sent at once when a template goes over the whole chapter.
 PART_WORDS = 600
@@ -933,8 +953,9 @@ def matching_passage(text, new):
     paras = [(m.start(), m.end()) for m in re.finditer(r"[^\n]+", text) if m.group(0).strip()]
     k = max(1, len([p for p in new.strip().split("\n") if p.strip()]))
     best, where = 0.0, None
-    for size in {max(1, k - 1), k, k + 1}:
-        for i in range(0, max(0, len(paras) - size) + 1):
+    # A rewrite with more paragraphs than the text has is compared with all of it.
+    for size in {min(len(paras), s) for s in (max(1, k - 1), k, k + 1)} - {0}:
+        for i in range(0, len(paras) - size + 1):
             start, end = paras[i][0], paras[i + size - 1][1]
             m = difflib.SequenceMatcher(None, text[start:end], new, autojunk=False)
             if m.real_quick_ratio() <= best or m.quick_ratio() <= best:
@@ -1229,8 +1250,9 @@ def notes_text(project, upto=None, short=False, before=None):
         if not note:
             continue
         if short:
-            m = re.search(r"### Summary\s*\n(.*?)(?=\n### |\Z)", note, re.S)
-            note = m.group(1).strip() if m else note[:600]
+            # The summary and the facts: who the people are is the cast's job.
+            kept = [m.group(0).strip() for m in re.finditer(r"### (?:Summary|Facts)\s*\n.*?(?=\n### |\Z)", note, re.S)]
+            note = "\n".join(kept) if kept else note[:600]
         title = title_of(project.chapter(file), f"Chapter {n}")
         if not re.match(r"(chapter|kapitel|prolog|epilog|part|teil)\b", title, re.I):
             title = f"Chapter {n}: {title}"
@@ -1239,13 +1261,78 @@ def notes_text(project, upto=None, short=False, before=None):
     return "\n\n".join(parts)
 
 
-def for_prompt(project, open_file, room):
-    """The story memory for a request about open_file, in about room characters: plans, cast,
-    threads and the chapter notes; with too little room the notes shrink to their summaries,
-    then to the chapters nearest the open one."""
+def names_in(entry):
+    """The names a cast entry goes by: "Viktor Vektor (Vik)" -> the whole name, each part, Vik."""
+    entry = entry.strip().rstrip(":")
+    names = {entry} | set(re.findall(r"\(([^)]+)\)", entry))
+    plain = re.sub(r"\([^)]*\)", "", entry).strip()
+    names |= {plain} | {w for w in re.findall(r"[\w'’-]+", plain) if w[0].isupper()}
+    return {n.strip() for n in names if n.strip()}
+
+
+def cast_entries(cast):
+    """The people of a cast page: (its sections, [(section, line or None, label, names)]). An
+    entry is a "## " section, or under one the "**Name:**" lines."""
+    sections = re.split(r"(?m)^(?=## )", cast)
+    entries = []
+    for i, sec in enumerate(sections[1:], 1):
+        lines = sec.split("\n")
+        subs = [(j, re.match(r"\*\*([^*]+?):?\*\*", line)) for j, line in enumerate(lines)]
+        subs = [(j, m.group(1).strip().rstrip(":")) for j, m in subs if m]
+        if subs:
+            entries += [(i, j, name, names_in(name)) for j, name in subs]
+        else:
+            label = lines[0][3:].strip()
+            entries.append((i, None, label, names_in(label)))
+    return sections, entries
+
+
+def cast_labels(cast):
+    return [label for _, _, label, _ in cast_entries(cast)[1]]
+
+
+def cast_found(cast, text):
+    """The labels of the people whose name comes up in text. A name part that two entries share
+    (Welles) counts for neither."""
+    _, entries = cast_entries(cast)
+    count = {}
+    for _, _, _, names in entries:
+        for n in names:
+            count[n] = count.get(n, 0) + 1
+    return [label for _, _, label, names in entries
+            if any(count[n] == 1 and re.search(rf"(?<![\w'’-]){re.escape(n)}(?![\w'’-])", text) for n in names)]
+
+
+def cast_for(cast, text, chosen=None):
+    """Only the people of the cast page in chosen (labels) and those whose name comes up in
+    text; a page without "## " entries whole."""
+    sections, entries = cast_entries(cast)
+    if not entries:
+        return cast
+    want = set(chosen or []) | set(cast_found(cast, text))
+    out = [sections[0].strip()] if sections[0].strip() else []
+    for i, sec in enumerate(sections[1:], 1):
+        lines = sec.rstrip().split("\n")
+        picked = {j for k, j, label, _ in entries if k == i and label in want}
+        if None in picked:
+            out.append(sec.strip())
+        elif picked:
+            out.append("\n\n".join([lines[0]] + [lines[j] for j in sorted(picked)]))
+    return "\n\n".join(out)
+
+
+def for_prompt(project, open_file, room, about=""):
+    """The story memory for a request about open_file, in about room characters: plans, cast
+    (the people picked for that chapter, or without a pick those named in it; and those named
+    in about), threads and the chapter notes; with
+    too little room the notes shrink to their summaries and facts, then to the chapters nearest
+    the open one."""
     style = style_of(project)
     plans = read_page(os.path.join(bible_dir(project), "plans.md")).strip()
     cast = read_page(os.path.join(bible_dir(project), "cast.md")).strip()
+    if cast and open_file:
+        chosen = project.cast.get(open_file)
+        cast = cast_for(cast, about if chosen is not None else project.chapter(open_file) + "\n" + about, chosen)
     threads = read_page(os.path.join(bible_dir(project), "threads.md")).strip()
     head = []
     if plans:
@@ -1283,8 +1370,8 @@ def for_prompt(project, open_file, room):
 # counting (slop phrases from a list you keep, gestures, long runs of dialogue, repetition);
 # they are patterns to look at, not errors. A review by a model makes notes by judging; a note
 # may carry a suggested alternative, which only becomes a change in the text when you ask.
-#   writing/<id>/review/c001.json   [{id, at, quote, original, kind, note, suggestion, source,
-#                                     by, time, status}]  status: open, done, dismissed, outdated
+# Notes are {id, at, quote, original, kind, note, suggestion, source, by, time, status} (status:
+# open, done, dismissed, outdated). They last while AIcove is open; nothing of them is stored.
 #   writing/slop.txt                the phrases the checker looks for, one per line
 # A note stays on its passage while you edit; when the passage changes too much it is outdated
 # instead of pointing at the wrong words.
@@ -1544,6 +1631,10 @@ def normalised(text):
     return "".join(out), where
 
 
+FUZZY_QUOTE = 600      # characters: longer quotes are only found exactly
+FUZZY_NEAR = 5000      # characters around where a quote was that are searched for a likeness
+
+
 def find_quote(text, quote, near=0):
     """Where a quoted passage is in text: (start, end), or None. Exact first, then with quotes,
     dashes and spaces evened out, then the most alike stretch of sentences."""
@@ -1563,8 +1654,13 @@ def find_quote(text, quote, near=0):
     if places:
         at = min(places, key=lambda p: abs(where[p] - near))
         return where[at], where[at + len(q) - 1] + 1
-    sentences = [(m.start(), m.end()) for m in re.finditer(r"[^.!?…\n]+[.!?…]*[”\"’']?", text) if m.group(0).strip()]
+    # The most alike stretch: only for a short quote, and only near where it was. (Comparing a
+    # long one at every place of a chapter takes minutes; it is outdated instead.)
     n = max(1, len(re.findall(r"[.!?…]+", quote)))
+    if len(quote) > FUZZY_QUOTE or n > 6:
+        return None
+    sentences = [(m.start(), m.end()) for m in re.finditer(r"[^.!?…\n]+[.!?…]*[”\"’']?", text)
+                 if m.group(0).strip() and abs(m.start() - near) < FUZZY_NEAR]
     best, span = 0.0, None
     for size in {n, n + 1}:
         for i in range(0, max(0, len(sentences) - size) + 1):
@@ -1579,8 +1675,14 @@ def find_quote(text, quote, near=0):
 
 
 def alike(a, b):
+    """How alike two passages are, 0 to 1. Long ones are compared word by word (letter by
+    letter takes too long)."""
     import difflib
-    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() if a or b else 1.0
+    if not a and not b:
+        return 1.0
+    if len(a) + len(b) > 1000:
+        a, b = a.split(), b.split()
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
 
 
 def review_path(project, file):

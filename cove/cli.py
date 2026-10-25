@@ -13,6 +13,7 @@ aicove info                     this machine's launchers as JSON (what another m
 aicove tools                    the tools of this machine and whether they run
 aicove tools start|stop NAME    one of them
 aicove passwords [sync]         names of the password entries | sync the store
+aicove sync                     the AIcove folder and its stories in step with the other machines
 aicove chat PERSONA [ID|last] ["message"]   chat from a terminal (no message: its chats)
 aicove agent [help]             agents: run, schedule, reports (aicove agent help)
 aicove check                    look at everything the settings point to
@@ -89,6 +90,9 @@ def main(argv=None):
     if cmd == "passwords":
         from . import passwords
         return passwords.main(args)
+    if cmd == "sync":
+        from . import sync
+        return sync.main(args)
     if cmd == "tools":
         from . import tools
         return tools.main(args)

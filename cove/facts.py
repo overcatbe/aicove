@@ -10,7 +10,7 @@ import os
 import re
 import urllib.request
 
-from . import personas, summary
+from . import personas, summary, turns
 from .settings import S
 
 FOLDER = "facts"
@@ -123,7 +123,7 @@ def propose(persona, chat):
         "temperature": 0.2, "max_tokens": 1500, "stream": False,
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(request).encode(),
+    req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(turns.body_in_turns(request)).encode(),
                                  {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=900) as r:
         data = json.loads(r.read())

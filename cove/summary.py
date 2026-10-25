@@ -10,6 +10,7 @@ import json
 import re
 import urllib.request
 
+from . import turns
 from .settings import S
 
 # Summarise when the chat fills this share of the context; keep this share word for word.
@@ -18,6 +19,8 @@ KEEP = 0.30
 WORDS = 700
 # A tool result counts with at most this much of its text in a summary.
 TOOL_CHARS = 1500
+# What a picture takes in the context of a model that sees (roughly; it depends on the model).
+PICTURE_TOKENS = 1200
 
 INSTRUCTIONS = """You keep the running summary of a long conversation between a user and an AI \
 character or assistant. The older messages will be deleted and replaced by your summary, so \
@@ -41,7 +44,8 @@ HEADER = ("[Summary of the earlier part of this conversation. The original messa
 
 
 def post(path, body, timeout=900):
-    req = urllib.request.Request(S.llama_url() + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    req = urllib.request.Request(S.llama_url() + path, json.dumps(turns.body_in_turns(body)).encode(),
+                                 {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -66,6 +70,19 @@ def line_of(m):
         return f"assistant: {m['content']}\n(calls tools: {calls})".strip()
     picture = " (with a picture)" if m.get("picture") and m["role"] == "user" else ""
     return f"{m['role']}{picture}: {m['content']}"
+
+
+def sent_of(m):
+    """One message as long as the model really gets it: tool results whole, unlike line_of."""
+    if m["role"] == "tool":
+        return f"tool: {m['content']}"
+    return line_of(m)
+
+
+def size_of(lines, messages):
+    """Tokens of these message lines, with room for the pictures that go along."""
+    return count("\n".join(lines)) + 8 * len(lines) + PICTURE_TOKENS * sum(
+        1 for m in messages if m["role"] == "user" and m.get("picture"))
 
 
 def digest(messages):
@@ -119,33 +136,36 @@ def usage(chat, fixed, n_ctx=None):
     meter under the chat. fixed is what goes with every request besides the messages."""
     covered, text = current(chat)
     n_ctx = n_ctx or context_size()
-    lines = [line_of(m) for m in chat.messages[covered:]]
+    lines = [sent_of(m) for m in chat.messages[covered:]]
     used = count(fixed + "\n" + text)
     if lines:
-        used += count("\n".join(lines)) + 8 * len(lines)
+        used += size_of(lines, chat.messages[covered:])
     return used, n_ctx
 
 
-def keep_up(chat, fixed, say=lambda text: None):
-    """Summarise older messages if the chat has grown past TRIGGER of the context. fixed is
-    what goes with every request besides the messages (system prompt, tools). Returns True if
-    the summary changed. Raises OSError when llama-server can't be asked."""
+def keep_up(chat, fixed, say=lambda text: None, now=False):
+    """Summarise older messages if the chat has grown past TRIGGER of the context, or now=True
+    (asked for by hand: then the older half at least, also below TRIGGER). fixed is what goes
+    with every request besides the messages (system prompt, tools). Returns True if the summary
+    changed. Raises OSError when llama-server can't be asked."""
     messages = chat.messages
     covered, text = current(chat)
     if len(messages) - covered < 4:
         return False
     n_ctx = context_size()
     lines = [line_of(m) for m in messages]
+    # Measured as sent (whole tool results), summarised from the shorter lines.
+    sent = [sent_of(m) for m in messages]
     base = count(fixed + "\n" + text)
-    live = count("\n".join(lines[covered:])) + 8 * (len(lines) - covered)
-    if base + live <= TRIGGER * n_ctx:
+    live = size_of(sent[covered:], messages[covered:])
+    if base + live <= TRIGGER * n_ctx and not now:
         return False
     # Walk back from the newest message until the share to keep is full; the kept part starts
     # with a message of the user's, so no tool result is cut off from its call.
-    per_char = live / max(sum(len(l) for l in lines[covered:]), 1)
-    budget, used, cut = KEEP * n_ctx, 0.0, None
+    per_char = live / max(sum(len(l) for l in sent[covered:]), 1)
+    budget, used, cut = min(KEEP * n_ctx, live / 2) if now else KEEP * n_ctx, 0.0, None
     for i in range(len(messages) - 1, covered, -1):
-        used += len(lines[i]) * per_char + 8
+        used += len(sent[i]) * per_char + 8 + (PICTURE_TOKENS if messages[i].get("picture") else 0)
         if used > budget and cut is not None:
             break
         if messages[i]["role"] == "user":

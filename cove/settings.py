@@ -55,6 +55,8 @@ SETTINGS = [
     ("access_write", [], "Folders they may also write text files in. Every change is shown first."),
     ("access_system", False, "true = they may read system files (/etc, /var/log, /proc, ...). Never change them."),
     ("access_never", [], "More that they may never read: folders, or name patterns like \"*.sql\"."),
+    ("machine", "", "This machine's name in the AIcove folder (each persona's settings per model are kept\n"
+                    "# per machine). Empty = the hostname."),
     ("notes_file", "", "A text file with a list of your launchers; \"Add model\" adds a line to it."),
 ]
 DEFAULTS = {key: default for key, default, _ in SETTINGS}

@@ -2,6 +2,7 @@
 # the model it runs on is started here when another one is loaded.
 
 import html
+import math
 import json
 import os
 import re
@@ -9,15 +10,15 @@ import threading
 import time
 
 import markdown
-from PyQt6.QtCore import QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
+from PyQt6.QtCore import QBuffer, QIODevice, QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QCursor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QFileDialog, QMenu, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from . import bestof, chat, facts, knowledge, launchers, personas, pictures, server, settings, summary, voice
+from . import agents, bestof, chat, facts, gui_state, knowledge, launchers, personas, pictures, profiles, server, settings, summary, voice
 
 try:
     from pygments.formatters import HtmlFormatter  # noqa: F401  (codehilite needs it)
@@ -55,6 +56,20 @@ def letter_colour(c):
     else:
         place = (ord(c) % 26) / 26
     return QColor.fromHsvF(place, 0.65, 0.80).name()
+
+
+def square_png(path, side=256):
+    """An image file cut to a square of side px (filled, not squeezed) as PNG bytes, or None."""
+    image = QImage(path)
+    if image.isNull():
+        return None
+    image = image.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                         Qt.TransformationMode.SmoothTransformation)
+    image = image.copy((image.width() - side) // 2, (image.height() - side) // 2, side, side)
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    return bytes(buffer.data())
 
 
 def face(persona):
@@ -139,6 +154,56 @@ def to_html(text, dark):
                               for i, p in enumerate(parts)))
 
 
+class Face(QWidget):
+    """The persona's picture at the top right, with a ring that pulses while the model works:
+    orange while it thinks or uses tools, the accent colour while it writes, slow grey while a
+    model loads. state() says which ("thinking", "writing", "loading" or None)."""
+    RING = 5
+
+    def __init__(self, state, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.pixmap = None
+        self.now = None
+        self.phase = 0.0
+        self.setFixedSize(CHAT_FACE_SIZE, CHAT_FACE_SIZE)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.step)
+        self.timer.start(40)
+
+    def setPixmap(self, pixmap):
+        self.pixmap = pixmap
+        self.update()
+
+    def step(self):
+        now = self.state() if self.isVisible() else None
+        if now is None and self.now is None:
+            return
+        self.phase += 0.04 if now == "loading" else 0.1
+        self.now = now
+        self.update()
+
+    def paintEvent(self, _):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        inner = self.rect().adjusted(self.RING + 1, self.RING + 1, -self.RING - 1, -self.RING - 1)
+        if self.pixmap is not None:
+            painter.drawPixmap(inner, self.pixmap)
+        if self.now is None:
+            return
+        colour = QColor({"thinking": "#e08a1e", "loading": "#8a8a8a"}.get(
+            self.now, self.palette().highlight().color().name()))
+        glow = 0.5 + 0.5 * math.sin(self.phase)
+        colour.setAlphaF(0.25 + 0.75 * glow)
+        pen = painter.pen()
+        pen.setColor(colour)
+        pen.setWidthF(1.5 + (self.RING - 1.5) * glow)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        half = pen.widthF() / 2
+        painter.drawEllipse(self.rect().toRectF().adjusted(half + 0.5, half + 0.5, -half - 0.5, -half - 0.5))
+
+
 class Reply(QThread):
     """Gets one answer in the background; the pieces come as signals. A write the model wants
     is asked in the window (asking), and this thread waits for the answer."""
@@ -176,8 +241,10 @@ class Measure(QThread):
     knowledge and tools, the summary and the chat (as summary.py counts it)."""
     done = pyqtSignal(object, int, int)
 
-    def __init__(self, persona, conversation, n_ctx):
-        super().__init__()
+    def __init__(self, persona, conversation, n_ctx, parent):
+        # A parent keeps it alive until it has really ended: dropped while its thread still runs,
+        # Qt ends the whole program.
+        super().__init__(parent)
         self.persona, self.n_ctx = persona, n_ctx
         # A copy: the chat may change while this runs.
         c = conversation or chat.Chat(persona.id, "")
@@ -190,6 +257,27 @@ class Measure(QThread):
         except (OSError, ValueError, KeyError):
             used, n_ctx = -1, 0
         self.done.emit(self.conversation.id, used, n_ctx)
+
+
+class Summarise(QThread):
+    """Summarises the older messages now, when asked by hand (the button by the meter)."""
+    failed = pyqtSignal(str)
+    said = pyqtSignal(str)
+
+    def __init__(self, persona, conversation, parent):
+        super().__init__(parent)
+        self.persona, self.conversation = persona, conversation
+        self.changed = False
+
+    def stop(self):
+        pass
+
+    def run(self):
+        try:
+            system, tools = chat.setup(self.persona, self.conversation)
+            self.changed = summary.keep_up(self.conversation, system + json.dumps(tools), self.said.emit, now=True)
+        except (OSError, ValueError, KeyError) as e:
+            self.failed.emit(str(e))
 
 
 class WriteDialog(QDialog):
@@ -436,7 +524,8 @@ class ChatTab(QWidget):
         self.title.setFont(font)
         self.model = QComboBox()
         self.model.currentIndexChanged.connect(lambda _: (self.show_thinking_control(), self.show_state()))
-        self.model.setToolTip("The models this persona may run on, that are on this machine")
+        self.model.setToolTip("The model for this chat: the persona's own on top, then all the others. "
+                              "Picking one doesn't change the persona.")
         self.load_btn = QPushButton("Load")
         self.load_btn.setToolTip("Load this model now (the one loaded at the moment is stopped)")
         self.load_btn.clicked.connect(lambda: self.load_model())
@@ -460,8 +549,7 @@ class ChatTab(QWidget):
         self.knowledge_btn = QPushButton("Knowledge…")
         self.knowledge_btn.clicked.connect(self.open_knowledge)
         # The persona's picture, once, at the top right (not with every answer).
-        self.face = QLabel()
-        self.face.setFixedSize(CHAT_FACE_SIZE, CHAT_FACE_SIZE)
+        self.face = Face(self.working)
         top = QHBoxLayout()
         top.addWidget(self.title)
         top.addStretch(1)
@@ -490,7 +578,6 @@ class ChatTab(QWidget):
         self.view.customContextMenuRequested.connect(self.view_menu)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Write here. Enter sends, Shift+Enter makes a new line.")
-        self.input.setFixedHeight(96)
         self.input.installEventFilter(self)
         self.input.viewport().installEventFilter(self)
         self.attached = None   # (QImage, name) of a picture going with the next message
@@ -543,12 +630,24 @@ class ChatTab(QWidget):
             knobs.addWidget(combo)
             knobs.addSpacing(12)
             self.controls[key] = combo
+        self.keep_btn = QPushButton()
+        self.keep_btn.setToolTip("Make this chat's Style, Thinking and Length the persona's settings on this "
+                                 "model (here, on this machine); the menus go back to \"as set\"")
+        self.keep_btn.clicked.connect(self.keep_for_model)
+        self.keep_btn.hide()
+        knobs.addWidget(self.keep_btn)
         knobs.addStretch(1)
         self.meter = QProgressBar()
         self.meter.setFixedWidth(230)
         self.meter.setMaximumHeight(18)
         self.meter.hide()
         knobs.addWidget(self.meter)
+        self.summarise_btn = QPushButton("Summarise")
+        self.summarise_btn.setToolTip("Summarise the older messages now (\"So far\" above the chat), before "
+                                      "the context is full. The newer ones stay as they are.")
+        self.summarise_btn.clicked.connect(self.summarise_now)
+        self.summarise_btn.hide()
+        knobs.addWidget(self.summarise_btn)
         self.measuring = None
         self.measured_for = None
         self.contexts = {}   # launcher name -> its context size, once asked
@@ -557,10 +656,14 @@ class ChatTab(QWidget):
         rbox = QVBoxLayout(right)
         rbox.setContentsMargins(0, 0, 0, 0)
         rbox.addLayout(head)
-        rbox.addWidget(self.view, 1)
-        rbox.addLayout(knobs)
-        rbox.addWidget(self.attach_label)
-        rbox.addLayout(bottom)
+        # The chat over its controls and the box you write in, with a divider to make that bigger.
+        below = QWidget()
+        bbox = QVBoxLayout(below)
+        bbox.setContentsMargins(0, 0, 0, 0)
+        bbox.addLayout(knobs)
+        bbox.addWidget(self.attach_label)
+        bbox.addLayout(bottom, 1)
+        rbox.addWidget(gui_state.resizable(self.view, below, "chat_input", 140), 1)
 
         split = QSplitter()
         split.addWidget(left)
@@ -599,6 +702,23 @@ class ChatTab(QWidget):
             self.people.addItem(item)
             if p.id == keep or (keep is None and pick is None and loaded and loaded.name in p.models):
                 pick = item
+        # Then the agents, to talk with about their work.
+        found = sorted(agents.load_all().values(), key=lambda a: a.name.lower())
+        if found:
+            head = QListWidgetItem("Agents")
+            head.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = head.font()
+            font.setBold(True)
+            head.setFont(font)
+            self.people.addItem(head)
+        for a in found:
+            item = QListWidgetItem(a.name)
+            item.setData(ROLE, a.pid)
+            item.setIcon(QIcon(face(personas.Persona(a.pid, a.name, ""))))
+            item.setToolTip(f"Agent: talk with {a.name} about its reports; runs are started on the Agents tab")
+            self.people.addItem(item)
+            if a.pid == keep:
+                pick = item
         self.people.blockSignals(False)
         if self.people.count():
             self.people.setCurrentItem(pick or self.people.item(0))
@@ -610,7 +730,7 @@ class ChatTab(QWidget):
         if self.persona and self.persona.id == pid:
             self.persona = personas.Persona.read(pid)
             self.show_face()
-            self.fill_models()
+            self.fill_models(keep=True)
             self.show_knowledge()
             return
         self.persona = personas.Persona.read(pid)
@@ -620,23 +740,50 @@ class ChatTab(QWidget):
         self.show_knowledge()
         self.fill_chats()
 
+    def working(self):
+        """What the model does for this chat right now, for the ring around the face."""
+        if self.worker is not None:
+            live = self.live or {}
+            return "writing" if live.get("text") else "thinking"
+        if self.waiting is not None or self.window.busy():
+            return "loading"
+        return None
+
     def show_face(self):
         ratio = self.devicePixelRatioF()
+        side = CHAT_FACE_SIZE - 2 * (Face.RING + 1)
         pixmap = QPixmap(face(self.persona)).scaled(
-            int(CHAT_FACE_SIZE * ratio), int(CHAT_FACE_SIZE * ratio),
+            int(side * ratio), int(side * ratio),
             Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         pixmap.setDevicePixelRatio(ratio)
         self.face.setPixmap(pixmap)
 
-    def fill_models(self):
+    def fill_models(self, keep=False):
+        """Every launcher: the persona's own first (its models, then those it ran on here), then a line, then the others (this machine's,
+        then those of other machines). Picking one only changes this chat's model, never the
+        persona. keep: what was picked stays (the same persona's list filled again); else what is
+        loaded; else the persona's first."""
         here = {l.name: l for l in launchers.find_launchers() if not l.error}
-        names = [n for n in self.persona.models if n in here] or sorted(here)
+        own = [n for n in self.persona.models if n in here]
+        # Then the ones it has run on here (profiles.py), the last used first.
+        ran = profiles.read(self.persona.id)
+        own += [n for n in sorted(ran, key=lambda n: ran[n]["used"], reverse=True) if n in here and n not in own]
+        others = sorted((n for n in here if n not in own), key=lambda n: (bool(here[n].host), n.lower()))
         loaded = chat.loaded_launcher()
+        picked = self.model.currentData() if keep else None
+        self.model.blockSignals(True)
         self.model.clear()
-        for name in names:
+        for name in own:
             self.model.addItem(here[name].label(), name)
-        if loaded and loaded.name in names:
-            self.model.setCurrentIndex(names.index(loaded.name))
+        if own and others:
+            self.model.insertSeparator(self.model.count())
+        for name in others:
+            self.model.addItem(here[name].label(), name)
+        index = self.model.findData(picked) if picked else -1
+        if index < 0:
+            index = self.model.findData(loaded.name) if loaded else -1
+        self.model.setCurrentIndex(index if index >= 0 else 0)
+        self.model.blockSignals(False)
         self.show_thinking_control()
         self.show_state()
 
@@ -714,9 +861,11 @@ class ChatTab(QWidget):
             combo.setCurrentIndex(max(combo.findData(values.get(key, "")), 0))
             combo.blockSignals(False)
         self.new_controls = {}
+        self.show_keep()
 
     def on_control(self, key):
         value = self.controls[key].currentData()
+        self.show_keep()
         if self.chat is None:
             # Kept for the chat the next message starts.
             self.new_controls[key] = value
@@ -749,6 +898,39 @@ class ChatTab(QWidget):
         combo.setEnabled(can is not False)
         combo.setToolTip("Whether a thinking model thinks before it answers. Off is quicker." if can is not False
                          else "This model's thinking can't be switched on or off.")
+        self.show_keep()
+
+    KEPT = ("style", "thinking", "length")
+
+    def show_keep(self):
+        name = self.model.currentData() or ""
+        self.keep_btn.setText(f"Keep for {name}")
+        self.keep_btn.setVisible(bool(self.persona and name and any(self.controls[k].currentData() for k in self.KEPT)))
+
+    def keep_for_model(self):
+        """The chat's Style, Thinking and Length become the persona's settings on the picked model
+        (profiles.py, this machine's file)."""
+        name = self.model.currentData() or ""
+        if not (self.persona and name):
+            return
+        wanted = dict(chat.STYLES.get(self.controls["style"].currentData(), {}))
+        if self.controls["length"].currentData() in chat.LENGTHS:
+            wanted["max_tokens"] = chat.LENGTHS[self.controls["length"].currentData()]
+        if self.controls["thinking"].currentData() and self.controls["thinking"].isEnabled():
+            wanted["thinking"] = self.controls["thinking"].currentData()
+        wanted = {k: personas.sampler_value(k, v) for k, v in wanted.items()}
+        merged = dict(profiles.read(self.persona.id).get(name, {}).get("samplers", {}))
+        merged.update({k: v for k, v in wanted.items() if v is not None})
+        try:
+            profiles.save_samplers(self.persona.id, {name: merged})
+        except OSError as e:
+            self.window.say(f"Can't keep the settings: {e}")
+            return
+        self.window.profile_kept(self.persona.id, name, merged)
+        self.window.say(f"{self.persona.name} on {name} now uses "
+                        + ", ".join(f"{k} {v}" for k, v in sorted(wanted.items())))
+        for key in self.KEPT:
+            self.controls[key].setCurrentIndex(0)
 
     # --- the model --------------------------------------------------------------------
 
@@ -777,6 +959,7 @@ class ChatTab(QWidget):
         if self.persona is None or loaded is None or loaded.name != self.model.currentData() \
                 or self.window.busy() or self.window.health.state != "ready":
             self.meter.hide()
+            self.summarise_btn.hide()
             self.measured_for = None
             return
         key = (self.persona.id, self.chat.id if self.chat else None,
@@ -788,7 +971,8 @@ class ChatTab(QWidget):
         if key == self.measured_for and not again:
             return
         self.measured_for = key
-        self.measuring = Measure(self.persona, self.chat, self.contexts.get(loaded.name))
+        self.measuring = Measure(self.persona, self.chat, self.contexts.get(loaded.name), self)
+        self.measuring.finished.connect(self.measuring.deleteLater)
         self.measuring.done.connect(lambda cid, used, n_ctx, name=loaded.name: self.measured(cid, used, n_ctx, name))
         self.measuring.start()
 
@@ -798,6 +982,7 @@ class ChatTab(QWidget):
             self.measured_for = None
             if used < 0:
                 self.meter.hide()
+                self.summarise_btn.hide()
             return
         self.contexts[name] = n_ctx
         share = used / max(n_ctx, 1)
@@ -810,6 +995,31 @@ class ChatTab(QWidget):
             f"persona's prompt, its facts and knowledge, and this chat. From {summary.TRIGGER:.0%} on "
             f"the oldest messages are summarised (\"So far\" above the chat).")
         self.meter.show()
+        covered = summary.current(self.chat)[0] if self.chat else 0
+        self.summarise_btn.setVisible(self.chat is not None and len(self.chat.messages) - covered >= 4)
+
+    def summarise_now(self):
+        if self.chat is None or self.worker or self.waiting:
+            return
+        self.problem = None
+        self.live = {"thinking": "", "text": "", "status": "Summarising the older messages…"}
+        self.summarise_btn.setEnabled(False)
+        self.worker = Summarise(self.persona, self.chat, self)
+        self.worker.said.connect(lambda text: self.on_part("status", text))
+        self.worker.failed.connect(lambda error: QMessageBox.warning(self, "Summarise", f"No summary: {error}"))
+        self.worker.finished.connect(self.summarised)
+        self.paint()
+        self.worker.start()
+
+    def summarised(self):
+        worker, self.worker = self.worker, None
+        worker.deleteLater()
+        self.live = None
+        self.summarise_btn.setEnabled(True)
+        if not worker.changed:
+            self.window.say("Nothing to summarise yet: the chat is short.")
+        self.paint()
+        self.measure(again=True)
 
     def load_model(self, then=None):
         name = self.model.currentData()
@@ -1082,6 +1292,11 @@ class ChatTab(QWidget):
         if what == "keep" and number.isdigit() and int(number) < len(self.chat.messages):
             self.keep(self.chat.messages[int(number)]["content"])
             return
+        if what == "rate":
+            number, _, vote = number.partition("/")
+            if number.isdigit() and int(number) < len(self.chat.messages):
+                self.rate(int(number), vote)
+            return
         if what == "version" and number.isdigit():
             if self.player is not None:
                 self.player.stop()
@@ -1117,6 +1332,17 @@ class ChatTab(QWidget):
             if dialog.again:
                 self.send()
             return
+        elif what == "againwith":
+            launcher = self.pick_model(message.get("model", ""))
+            if launcher is None:
+                return
+            self.model.setCurrentIndex(self.model.findData(launcher))
+            self.chat.put_aside()
+            self.open_thinking.clear()
+            self.chat.save()
+            self.paint()
+            self.send()
+            return
         elif what == "again":
             # A new answer to the same question; this one (with its tool steps) is kept as an
             # earlier version.
@@ -1139,6 +1365,40 @@ class ChatTab(QWidget):
             self.chat.save()
         self.paint()
         self.measure(again=True)
+
+    def rate(self, i, vote):
+        """👍/👎 for an answer (the same again takes it back), counted for the persona on the
+        answer's model (profiles.py)."""
+        message = self.chat.messages[i]
+        was = message.get("rating", "")
+        now = "" if vote == was else vote if vote in profiles.VOTES else ""
+        if now:
+            message["rating"] = now
+        else:
+            message.pop("rating", None)
+        self.chat.save()
+        try:
+            profiles.vote(self.persona.id, message.get("model", ""), was, now)
+        except OSError as e:
+            self.window.say(f"Can't count the vote: {e}")
+        self.paint()
+
+    def pick_model(self, now):
+        """A menu of the chat's models at the mouse; the launcher's name, or None."""
+        menu = QMenu(self)
+        for k in range(self.model.count()):
+            name = self.model.itemData(k)
+            if not name:
+                if self.model.itemText(k) == "" and not menu.isEmpty():
+                    menu.addSeparator()
+                continue
+            action = menu.addAction(self.model.itemText(k))
+            action.setData(name)
+            if name == now:
+                action.setEnabled(False)
+                action.setText(action.text() + "  (this answer)")
+        chosen = menu.exec(QCursor.pos())
+        return chosen.data() if chosen is not None else None
 
     def on_summary(self, action):
         """The "So far" box: edit it, or drop it (the next message makes a new one if needed)."""
@@ -1350,11 +1610,29 @@ class ChatTab(QWidget):
         self.view.setHtml(self.page())
         bar.setValue(bar.maximum() if at_end or self.worker else keep)
 
+    @staticmethod
+    def buttons(links, dim, ground):
+        """The links under a message as a row of small buttons (cells with a ground: the view
+        can't show real buttons); what isn't a single link (counts, the ◀ 1/2 ▶) stays plain."""
+        if not links:
+            return ""
+        cells = []
+        for link in links:
+            if re.fullmatch(r"<a [^>]*>.*?</a>", link) and link.count("<a ") == 1:
+                if "text-decoration" not in link:
+                    link = link.replace("<a ", "<a style='text-decoration:none' ", 1)
+                cells.append(f"<td bgcolor='{ground}' valign='middle' style='font-size:small'>&nbsp;{link}&nbsp;</td>")
+            else:
+                cells.append(f"<td valign='middle' style='color:{dim}; font-size:small'>{link}</td>")
+        return f"<table cellspacing='4' cellpadding='3' style='margin-top:2px'><tr>{''.join(cells)}</tr></table>"
+
     def page(self):
         pal = self.palette()
         dark = pal.window().color().lightness() < 128
         dim = pal.placeholderText().color().name()
         mine = pal.alternateBase().color().name()
+        # Buttons under messages: a step lighter (dark theme) or darker than the page.
+        button = pal.base().color().lighter(190).name() if dark else pal.base().color().darker(112).name()
         if self.persona is None:
             return f"<p style='color:{dim}'>No personas yet — make one on the Personas tab.</p>"
         messages = self.chat.messages if self.chat else []
@@ -1406,8 +1684,7 @@ class ChatTab(QWidget):
                             f"height='{int(size.height() * scale)}'></a></p>")
                 parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
                              f"{head}<br>{seen}{to_html(m['content'], dark)}"
-                             f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>"
-                             "</td></tr></table>")
+                             f"{self.buttons(links, dim, button)}</td></tr></table>")
                 continue
             if m["role"] != "assistant":
                 continue
@@ -1442,8 +1719,16 @@ class ChatTab(QWidget):
                         links.insert(0, f"<a href='cove:listen/{i}'>■ stop</a>")
                     else:
                         links.insert(0, f"<a href='cove:listen/{i}'>🔊 listen</a>")
+                if m["content"]:
+                    vote = m.get("rating", "")
+                    # Bold doesn't show on an emoji: the chosen one is bigger.
+                    links += [(f"<a href='cove:rate/{i}/{k}' style='text-decoration:none'>"
+                               f"<span style='font-size:x-large'>{mark}</span></a>" if vote == k
+                               else f"<a href='cove:rate/{i}/{k}'>{mark}</a>")
+                              for k, mark in (("up", "👍"), ("down", "👎"))]
                 if i == last:
                     links.append(f"<a href='cove:again/{i}'>answer again</a>")
+                    links.append(f"<a href='cove:againwith/{i}'>again with…</a>")
                     version, versions = self.chat.versions()
                     if versions > 1:
                         back = f"<a href='cove:version/{version - 1}'>◀</a>" if version > 0 else "◀"
@@ -1455,7 +1740,7 @@ class ChatTab(QWidget):
                 if m.get("stats"):
                     links.append(f"{m['stats']['tokens']:,} tokens · {m['stats']['speed']} t/s")
             head = f"<p style='margin:0'>{name}{model}</p>" if first else ""
-            links = f"<span style='color:{dim}; font-size:small'>{' · '.join(links)}</span>" if links else ""
+            links = self.buttons(links, dim, button)
             parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}{links}</td></tr></table>")
         if self.live is not None:
             body = ""

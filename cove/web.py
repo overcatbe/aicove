@@ -15,6 +15,7 @@ import contextlib
 import ipaddress
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -83,7 +84,13 @@ def search(query):
         for r in json.loads(body or b"{}").get("results", [])[:8]:
             rows.append((r.get("title", ""), r.get("url", ""), r.get("content", "")))
     elif "://" in where:
-        _, _, body = get(where.rstrip("/") + "/search?" + urllib.parse.urlencode({"q": query, "format": "json"}))
+        address = where.rstrip("/") + "/search?" + urllib.parse.urlencode({"q": query, "format": "json"})
+        try:
+            _, _, body = get(address)
+        except urllib.error.URLError:
+            if not wake(where):
+                raise
+            _, _, body = get(address)
         for r in json.loads(body).get("results", [])[:8]:
             rows.append((r.get("title", ""), r.get("url", ""), r.get("content", "")))
     else:
@@ -105,6 +112,16 @@ def search(query):
         return f"No results for \"{query}\"."
     return f"Results for \"{query}\":\n\n" + "\n\n".join(
         f"{n}. {t}\n{u}\n{s}" for n, (t, u, s) in enumerate(rows, 1))
+
+
+def wake(where):
+    """When the search address is a tool of yours (Tools tab, like SearXNG) that isn't running:
+    start it. True when it runs now."""
+    from . import tools
+    for t in tools.find_tools():
+        if t.address and t.address.rstrip("/") == where.rstrip("/") and not t.error and t.state() == "stopped":
+            return tools.start(t, say=lambda _: None) == 0
+    return False
 
 
 def wikipedia(query):
@@ -226,9 +243,67 @@ def via(host, say=print):
         subprocess.run(ssh_args(host)[:-1] + ["-O", "exit", host], capture_output=True)
 
 
-def read_page(url, part=1, fetched=None):
+# Where a page says when it came out: meta tags, schema.org data, <time>, or the address.
+DATE_TAGS = r"(?:article:published_time|og:published_time|datePublished|pubdate|publish-date|" \
+    r"publication_date|parsely-pub-date|sailthru\.date|dc\.date|dcterms\.date|date)"
+DATE_PATTERNS = [
+    rf"<meta[^>]+(?:property|name|itemprop)=[\"']{DATE_TAGS}[\"'][^>]*content=[\"'](\d{{4}}-\d\d-\d\d)",
+    rf"<meta[^>]+content=[\"'](\d{{4}}-\d\d-\d\d)[^\"']*[\"'][^>]*(?:property|name|itemprop)=[\"']{DATE_TAGS}[\"']",
+    r"\"datePublished\"\s*:\s*\"(\d{4}-\d\d-\d\d)",
+    r"<time[^>]+datetime=[\"'](\d{4}-\d\d-\d\d)",
+]
+
+
+MONTHS = {m: n for n, names in enumerate([
+    ("january", "januar", "jänner"), ("february", "februar", "feber"), ("march", "märz"), ("april",), ("may", "mai"),
+    ("june", "juni"), ("july", "juli"), ("august",), ("september",), ("october", "oktober"), ("november",),
+    ("december", "dezember")], 1) for m in names}
+# Or in words on the page: "Publication 19 October 2026", "Published: 19.10.2026", "Veröffentlicht am ...".
+WORDS_DATE = re.compile(r"(?:published|publication|posted|veröffentlicht)\W{1,30}?(?:on |am )?(?:\w+day,? )?"
+                        r"(?:(\d{1,2})\.? ?(" + "|".join(MONTHS) + r")\.? (20\d\d)|(\d{1,2})\.(\d{1,2})\.(20\d\d)"
+                        r"|(" + "|".join(MONTHS) + r") (\d{1,2}),? (20\d\d))", re.IGNORECASE)
+
+
+def published(html, url):
+    """The day a page came out ("YYYY-MM-DD"), or "" when it doesn't say."""
+    for pattern in DATE_PATTERNS:
+        m = re.search(pattern, html[:400_000], re.IGNORECASE)
+        if m:
+            return m.group(1)
+    m = re.search(r"/(20\d\d)[/-](\d\d)[/-](\d\d)(?:/|$|[^0-9])", urllib.parse.urlsplit(url).path)
+    if m:
+        return "-".join(m.groups())
+    m = WORDS_DATE.search(strip_tags(html[:400_000]))
+    if not m:
+        return ""
+    g = m.groups()
+    day, month, year = (g[0], MONTHS[g[1].lower()], g[2]) if g[0] else \
+        (g[3], int(g[4]), g[5]) if g[3] else (g[7], MONTHS[g[6].lower()], g[8])
+    return f"{year}-{int(month):02d}-{int(day):02d}" if 1 <= int(month) <= 12 and 1 <= int(day) <= 31 else ""
+
+
+def links_of(html_text, base):
+    """[(text, absolute address)] of the links on a page that look like articles: a longer path
+    (a slug or several parts), not a menu entry."""
+    found, seen = [], set()
+    for m in re.finditer(r"(?is)<a\b[^>]*?href=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", html_text[:MAX_BYTES]):
+        href = urllib.parse.urljoin(base, m.group(1).strip())
+        text = " ".join(strip_tags(m.group(2)).split())
+        path = urllib.parse.urlsplit(href).path
+        if not href.startswith(("http://", "https://")) or len(text) < 25 or href in seen:
+            continue
+        if len([p for p in path.split("/") if p]) < 2 and len(path) < 25:
+            continue
+        seen.add(href)
+        found.append((text[:160], href))
+    return found
+
+
+def read_page(url, part=1, fetched=None, dates=None, links=None):
     """A page as text for the model. fetched (a set), if given, gets the address asked for and
-    the one it ended at when the page could be read."""
+    the one it ended at when the page could be read; dates (a dict), if given, the day it came
+    out under both addresses (when it says); links (a list), if given, the article links on it.
+    """
     refusal = why_not(url)
     if refusal:
         return refusal
@@ -242,13 +317,18 @@ def read_page(url, part=1, fetched=None):
     if fetched is not None:
         fetched.update((url, final))
     text = body.decode("utf-8", errors="replace")
+    day = published(text, final) if kind in ("text/html", "application/xhtml+xml") else ""
+    if dates is not None and day:
+        dates.update({url: day, final: day})
+    if links is not None and kind in ("text/html", "application/xhtml+xml"):
+        links.extend(links_of(text, final))
     if kind != "text/plain" and kind != "application/json":
         text = strip_tags(text)
     parts = max(1, -(-len(text) // PART))
     part = min(max(int(part or 1), 1), parts)
     more = f" Part {part} of {parts}; read_web_page with part={part + 1} for more." if part < parts else \
         (f" Part {part} of {parts}." if parts > 1 else "")
-    return f"{final}.{more}\n\n" + text[(part - 1) * PART:part * PART]
+    return f"{final}.{more}" + (f" Published {day}." if day else "") + "\n\n" + text[(part - 1) * PART:part * PART]
 
 
 def run(name, arguments):

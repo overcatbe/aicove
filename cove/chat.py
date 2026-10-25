@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import facts, files, knowledge, launchers, personas, pictures, server, summary, voice, web
+from . import facts, files, knowledge, launchers, personas, pictures, profiles, server, summary, turns, voice, web
 from .settings import S
 
 CHAT_ID = re.compile(r"\d{8}-\d{6}(-\d+)?")
@@ -222,15 +222,17 @@ def request_for(persona, messages, controls=None, tools=()):
     """The body for llama-server's /v1/chat/completions: the persona's settings, then the
     chat's controls over them."""
     body = {"messages": messages, "stream": True}
+    loaded = loaded_launcher()
+    samplers = profiles.samplers_for(persona, loaded.name if loaded else "")
     for key in SENT:
-        if key in persona.samplers:
-            value = persona.samplers[key]
+        if key in samplers:
+            value = samplers[key]
             body[key] = int(value) if key in personas.WHOLE else float(value)
     controls = controls or {}
     body.update(STYLES.get(controls.get("style"), {}))
     if controls.get("length") in LENGTHS:
         body["max_tokens"] = LENGTHS[controls["length"]]
-    thinking = controls.get("thinking") or persona.samplers.get("thinking")
+    thinking = controls.get("thinking") or samplers.get("thinking")
     if thinking in ("on", "off"):
         body["chat_template_kwargs"] = {"enable_thinking": thinking == "on"}
     if tools:
@@ -316,7 +318,7 @@ def stream(body, on_part, stop=lambda: False, timings=None):
     kind being "thinking" or "text". stop() is asked between pieces; when it says yes the answer
     ends there. timings (a dict) gets llama-server's numbers of the answer, if it sends them. Returns (why it ended: "stop", "length", "tool_calls", "stopped" (by us);
     the tool calls as [{id, name, arguments}]), or raises OSError."""
-    req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(body).encode(),
+    req = urllib.request.Request(S.llama_url() + "/v1/chat/completions", json.dumps(turns.body_in_turns(body)).encode(),
                                  {"Content-Type": "application/json"})
     try:
         r = urllib.request.urlopen(req, timeout=600)
@@ -399,6 +401,11 @@ def reply(persona, chat, on_part, stop=lambda: False, ask=None):
     gets "thinking" and "text" pieces, and ("round", "") when a new round after tools starts.
     Returns the last new message."""
     launcher = loaded_launcher()
+    if launcher is not None:
+        try:
+            profiles.used(persona.id, launcher.name)
+        except OSError:
+            pass
     message = None
     for round_ in range(MAX_ROUNDS + 1):
         system, tools = setup(persona, chat)

@@ -6,9 +6,11 @@
 # suggestions, old text struck through in red and new text in green, until you accept or
 # decline them.
 
+import bisect
 import json
 import os
 import re
+import shutil
 import time
 
 from PyQt6.QtCore import QMarginsF, QMimeData, QThread, QTimer, Qt, QUrl, pyqtSignal
@@ -22,7 +24,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from . import chat, facts, launchers, personas, summary, writing
+from . import chat, facts, gui_state, launchers, personas, summary, writing
 from .gui_chat import to_html
 from .settings import STATE_DIR
 
@@ -120,51 +122,96 @@ class ChapterEditor(TextBox):
         self.cursorPositionChanged.connect(self.moved)
 
     # --- positions: Qt counts UTF-16 units, Python characters -----------------------
+    # Worked out once per state of the text (and of the list of changes), not per question:
+    # a chapter with a hundred changes waiting asks a great many.
+
+    def snap(self):
+        key = (self.document().revision(), len(self.items), id(self.items[-1]) if self.items else 0)
+        if getattr(self, "_snap", None) is None or self._snap[0] != key:
+            text = self.document().toPlainText()
+            wide = any(ord(c) > 0xFFFF for c in text)
+            conv = (lambda q: q2p(text, q)) if wide else (lambda q: min(q, len(text)))
+            ranges = sorted((conv(s.new()[0]), conv(s.new()[1])) for s in self.items)
+            ranges = [(a, max(a, b)) for a, b in ranges]
+            starts = [a for a, _ in ranges]
+            before = [0]                       # removed before range i
+            for a, b in ranges:
+                before.append(before[-1] + b - a)
+            fstarts = [a - before[i] for i, (a, _) in enumerate(ranges)]
+            self._snap = (key, text, wide, conv, ranges, starts, before, fstarts)
+        return self._snap
 
     def doc_text(self):
-        return self.document().toPlainText()
+        return self.snap()[1]
 
-    def ranges(self, text):
-        """The new pieces as Python index ranges of text, in order."""
-        return sorted((q2p(text, s.new()[0]), q2p(text, s.new()[1])) for s in self.items)
+    def ranges(self, text=None):
+        """The new pieces as Python index ranges of the document text, in order."""
+        return self.snap()[4]
 
     def file_text(self):
-        text = self.doc_text()
-        for start, end in reversed(self.ranges(text)):
-            text = text[:start] + text[end:]
-        return text
+        _, text, _, _, ranges, _, _, _ = self.snap()
+        if not ranges:
+            return text
+        parts, last = [], 0
+        for a, b in ranges:
+            parts.append(text[last:a])
+            last = b
+        parts.append(text[last:])
+        return "".join(parts)
 
     def to_file(self, pos):
         """A document position as an index in file_text()."""
-        text = self.doc_text()
-        p = q2p(text, pos)
-        removed = sum(min(end, p) - start for start, end in self.ranges(text) if start < p)
+        _, text, _, conv, ranges, starts, before, _ = self.snap()
+        p = conv(pos)
+        i = bisect.bisect_left(starts, p)
+        removed = before[i]
+        if i > 0 and ranges[i - 1][1] > p:
+            # inside the piece before: only the part up to p is gone
+            removed -= ranges[i - 1][1] - p
         return p - removed
 
     def to_doc(self, at):
         """An index in file_text() as a document position, after the new pieces before it."""
-        text = self.doc_text()
-        p = at
-        for start, end in self.ranges(text):
-            if start <= p:
-                p += end - start
-        return p2q(text, p)
+        _, text, wide, _, _, _, before, fstarts = self.snap()
+        p = at + before[bisect.bisect_right(fstarts, at)]
+        return p2q(text, p) if wide else p
 
     def piece(self, r):
-        text = self.doc_text()
-        return text[q2p(text, r[0]):q2p(text, r[1])]
+        _, text, _, conv, _, _, _, _ = self.snap()
+        return text[conv(r[0]):conv(r[1])]
 
     # --- loading and saving ------------------------------------------------------
 
     def load(self, text, found):
-        """The file's text with its suggestions. Returns how many no longer fit the text."""
+        """The file's text with its suggestions, put together in one go. Returns how many no
+        longer fit the text."""
         self.items = []
-        self.setPlainText(text)
-        dropped = 0
+        self._snap = None
+        placed, last_end, dropped = [], -1, 0
         for item in sorted(found, key=lambda i: i["at"]):
-            if not self.add_one(item, text):
+            at = writing.locate(text, item)
+            if at is None or (not item["old"] and not item["new"]) or at < last_end \
+                    or (at == last_end and placed and placed[-1][1]["old"] and not item["old"]):
                 dropped += 1
-        self.document().clearUndoRedoStacks()
+                continue
+            placed.append((at, item))
+            last_end = at + len(item["old"])
+        # The document: the text with each change's new piece right after its old one.
+        parts, spans, last, length = [], [], 0, 0
+        for at, item in placed:
+            parts.append(text[last:at])
+            length += qlen(text[last:at])
+            old_len, new_len = qlen(item["old"]), qlen(item["new"])
+            spans.append((length, old_len, new_len, item))
+            parts.append(item["old"] + item["new"])
+            length += old_len + new_len
+            last = at + len(item["old"])
+        parts.append(text[last:])
+        self.setPlainText("".join(parts))
+        doc = self.document()
+        self.items = [Suggestion(doc, start, old_len, new_len, item.get("by", ""), item.get("time", 0.0))
+                      for start, old_len, new_len, item in spans]
+        doc.clearUndoRedoStacks()
         self.paint()
         self.items_changed.emit()
         return dropped
@@ -466,27 +513,11 @@ class ChapterEditor(TextBox):
 
 
 def remembered(key, default=None):
-    try:
-        with open(os.path.join(STATE_DIR, "writing.json"), encoding="utf-8") as f:
-            return json.load(f).get(key, default)
-    except (OSError, ValueError):
-        return default
+    return gui_state.remembered(key, default, "writing.json")
 
 
 def remember(key, value):
-    path = os.path.join(STATE_DIR, "writing.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    data[key] = value
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except OSError:
-        pass
+    gui_state.remember(key, value, "writing.json")
 
 
 class Ask(QThread):
@@ -567,6 +598,8 @@ class TalkPanel(QWidget):
         self.waiting = None        # what to do once the model is up
         self.live = ""
         self.talk = []             # messages of the talk: role, content (as sent), shown, time
+        self.talk_file = None      # where it is kept: one talk per chapter
+        self.reload_later = False  # the chapter changed while an answer was coming
 
         self.who = QComboBox()
         self.who.currentIndexChanged.connect(self.pick_persona)
@@ -598,7 +631,6 @@ class TalkPanel(QWidget):
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Ask about the chapter or the selected text, or say what to change "
                                       "(Enter sends, Shift+Enter is a new line)")
-        self.input.setMaximumHeight(90)
         self.input.installEventFilter(self)
         self.send_btn = QPushButton("Send")
         self.send_btn.clicked.connect(lambda: self.send())
@@ -629,11 +661,18 @@ class TalkPanel(QWidget):
         box.addLayout(row)
         box.addWidget(self.state)
         box.addLayout(trow)
-        box.addWidget(self.view, 1)
-        box.addWidget(self.put_btn)
-        box.addWidget(self.target)
-        box.addWidget(self.input)
-        box.addLayout(brow)
+        # The talk over the box you write in, with a divider to make that bigger.
+        above, below = QWidget(), QWidget()
+        abox = QVBoxLayout(above)
+        abox.setContentsMargins(0, 0, 0, 0)
+        abox.addWidget(self.view, 1)
+        abox.addWidget(self.put_btn)
+        abox.addWidget(self.target)
+        bbox = QVBoxLayout(below)
+        bbox.setContentsMargins(0, 0, 0, 0)
+        bbox.addWidget(self.input, 1)
+        bbox.addLayout(brow)
+        box.addWidget(gui_state.resizable(above, below, "writing_input", 130), 1)
 
         self.window.proc.finished.connect(self.model_started)
         self.timer = QTimer(self)
@@ -801,12 +840,36 @@ class TalkPanel(QWidget):
     # --- the talk ----------------------------------------------------------------
 
     def talk_path(self):
-        p = self.tab.project
-        return os.path.join(writing.project_chat_dir(p), "current.json") if p else None
+        """The open chapter's talk. The one talk a project had before goes to the chapter it was
+        last about."""
+        p, file = self.tab.project, self.tab.file
+        if not p or not file:
+            return None
+        folder = writing.project_chat_dir(p)
+        old = os.path.join(folder, "current.json")
+        if os.path.exists(old):
+            try:
+                with open(old, encoding="utf-8") as f:
+                    messages = json.load(f).get("messages", [])
+            except (OSError, ValueError):
+                messages = []
+            about = next((m["target"]["file"] for m in reversed(messages) if m.get("target", {}).get("file")),
+                         p.chapters[0][0] if p.chapters else file)
+            to = os.path.join(folder, about[:-3] + ".json")
+            os.replace(old, to if not os.path.exists(to) else
+                       os.path.join(folder, f"{about[:-3]}-{time.strftime('%Y%m%d-%H%M%S')}.json"))
+        return os.path.join(folder, file[:-3] + ".json")
+
+    def chapter_changed(self):
+        """Another chapter open: its talk (once a coming answer is in)."""
+        if self.worker is not None:
+            self.reload_later = True
+        elif self.talk_path() != self.talk_file:
+            self.load_talk()
 
     def load_talk(self):
         self.talk = []
-        path = self.talk_path()
+        path = self.talk_file = self.talk_path()
         if path:
             try:
                 with open(path, encoding="utf-8") as f:
@@ -814,10 +877,17 @@ class TalkPanel(QWidget):
             except (OSError, ValueError):
                 self.talk = []
         self.live = ""
+        # A chapter with text and no talk yet: the first prompt ready in the box, Enter sends it.
+        first = writing.first_prompt()
+        typed = self.input.toPlainText().strip()
+        if not typed or typed == first:
+            body = writing.body_of(self.tab.project.chapter(self.tab.file)) if path else ""
+            self.input.setPlainText(first if first and not self.talk and body.strip() else "")
+            self.input.moveCursor(QTextCursor.MoveOperation.End)
         self.paint()
 
     def save_talk(self):
-        path = self.talk_path()
+        path = self.talk_file
         if not path:
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -828,11 +898,10 @@ class TalkPanel(QWidget):
     def new_talk(self):
         if self.worker is not None:
             return
-        path = self.talk_path()
-        if path and os.path.exists(path) and self.talk:
-            os.replace(path, os.path.join(os.path.dirname(path), time.strftime("%Y%m%d-%H%M%S") + ".json"))
-        self.talk = []
-        self.paint()
+        path = self.talk_file
+        if path and os.path.exists(path):
+            os.remove(path)
+        self.load_talk()
 
     def paint(self):
         dark = self.palette().window().color().lightness() < 128
@@ -896,7 +965,8 @@ class TalkPanel(QWidget):
         # The chapter takes at most 45% of the context (a long one is cut around where you are),
         # the story memory 30%.
         room = int(n_ctx * 0.45 * 3.2)
-        bible = writing.for_prompt(p, self.tab.file, int(n_ctx * 0.3 * 3.2))
+        bible = writing.for_prompt(p, self.tab.file, int(n_ctx * 0.3 * 3.2),
+                                   self.talk[-1]["content"] if self.talk and self.talk[-1]["role"] == "user" else "")
         if len(ft) > room:
             target = self.talk[-1].get("target", {}) if self.talk else {}
             where = target.get("at", target.get("cursor", self.tab.editor.to_file(self.tab.editor.textCursor().position())))
@@ -911,8 +981,24 @@ class TalkPanel(QWidget):
         if not self.talk or self.talk[-1]["role"] != "user":
             return
         persona = self.persona()
-        messages = [{"role": "system", "content": self.system()}]
-        messages += [{"role": m["role"], "content": m["content"]} for m in self.talk[-12:]]
+        system = self.system()
+        # The latest messages of the talk, at most 12, as many as fit next to the chapter and
+        # the story memory with room left for the answer (about 3.2 characters a token).
+        try:
+            n_ctx = summary.context_size()
+        except (OSError, ValueError, KeyError):
+            n_ctx = 8192
+        left = int(n_ctx * 0.85 * 3.2) - len(system) - len(writing.REMINDER)
+        recent = []
+        for m in reversed(self.talk[-12:]):
+            if recent and len(m["content"]) > left:
+                break
+            recent.insert(0, m)
+            left -= len(m["content"])
+        if recent[0]["role"] == "assistant" and len(recent) > 1:
+            recent = recent[1:]
+        messages = [{"role": "system", "content": system}]
+        messages += [{"role": m["role"], "content": m["content"]} for m in recent]
         messages[-1] = {"role": "user", "content": messages[-1]["content"] + "\n\n" + writing.REMINDER}
         self.live = ""
         self.put_btn.hide()
@@ -942,6 +1028,14 @@ class TalkPanel(QWidget):
             self.worker.stop()
 
     def answered(self):
+        try:
+            self.take_answer()
+        finally:
+            if self.reload_later:
+                self.reload_later = False
+                self.chapter_changed()
+
+    def take_answer(self):
         worker, self.worker = self.worker, None
         self.busy(False)
         if worker.passages:
@@ -1226,6 +1320,47 @@ class Remember(QThread):
             if page and not self.stopping:
                 writing.write_page(writing.model_copy(p, name), page)
                 writing.write_page(os.path.join(writing.bible_dir(p), name), writing.merge_locked(p, name, page, index))
+
+
+class CastDialog(QDialog):
+    """Who is in a chapter: ticked entries of the cast page go to the models with it."""
+
+    def __init__(self, tab, labels, chosen, found):
+        super().__init__(tab)
+        self.tab = tab
+        self.setWindowTitle("Cast of this chapter")
+        info = QLabel("Who is in this chapter. The models get only these people's cast entries (and of "
+                      "anyone you name in your message)." + ("" if chosen is not None else
+                      " Nothing picked yet: ticked are the ones whose name comes up in the chapter."))
+        info.setWordWrap(True)
+        self.list = QListWidget()
+        for label in labels:
+            item = QListWidgetItem(label)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if label in (chosen if chosen is not None else found)
+                               else Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        auto = buttons.addButton("By names", QDialogButtonBox.ButtonRole.ResetRole)
+        auto.setToolTip("No pick: the people whose name comes up in the chapter, worked out each time")
+        auto.clicked.connect(lambda: self.done_with(None))
+        buttons.accepted.connect(lambda: self.done_with([self.list.item(i).text() for i in range(self.list.count())
+                                                         if self.list.item(i).checkState() == Qt.CheckState.Checked]))
+        buttons.rejected.connect(self.reject)
+        box = QVBoxLayout(self)
+        box.addWidget(info)
+        box.addWidget(self.list, 1)
+        box.addWidget(buttons)
+        self.resize(360, 480)
+
+    def done_with(self, chosen):
+        p, file = self.tab.project, self.tab.file
+        if chosen is None:
+            p.cast.pop(file, None)
+        else:
+            p.cast[file] = chosen
+        p.write()
+        self.accept()
 
 
 class MemoryDialog(QDialog):
@@ -1899,6 +2034,7 @@ class WritingTab(QWidget):
         self.loading = False
         self.items_dirty = False
         self.notes_dirty = False
+        self.session_notes = {}    # (project, chapter) -> review notes, while the window is open
         self.remembering = None    # the story memory being built
         self.memory_dialog = None
 
@@ -1913,8 +2049,7 @@ class WritingTab(QWidget):
                                 ("Export…", "The whole project as one file: Markdown, text, HTML, PDF, EPUB or Word",
                                  self.export),
                                 ("Rename…", "", self.rename_project),
-                                ("Delete project…", "", self.delete_project),
-                                ("Open folder", "", self.open_folder)):
+                                ("Delete project…", "", self.delete_project)):
             a = menu.addAction(label)
             a.setToolTip(tip)
             a.triggered.connect(act)
@@ -1935,10 +2070,13 @@ class WritingTab(QWidget):
         memory_btn.setToolTip("What the models know about the whole story: chapter notes, cast, threads, your "
                               "style and plans. Build it, read it, correct it.")
         memory_btn.clicked.connect(self.show_memory)
+        folder_btn = QPushButton("Folder")
+        folder_btn.setToolTip("Open the project's folder in the file manager")
+        folder_btn.clicked.connect(self.open_folder)
         top = QHBoxLayout()
         top.addWidget(QLabel("Project:"))
         top.addWidget(self.projects)
-        for b in (project_btn, memory_btn, post_btn):
+        for b in (project_btn, folder_btn, memory_btn, post_btn):
             top.addWidget(b)
         top.addStretch(1)
 
@@ -1969,13 +2107,19 @@ class WritingTab(QWidget):
         remember_btn.setToolTip("Read this chapter into the story memory (its note, then cast and threads), "
                                 "without marking it done")
         remember_btn.clicked.connect(self.remember_this)
+        cast_btn = QPushButton("Cast…")
+        cast_btn.setToolTip("Who is in this chapter: the models get only their entries from the cast page")
+        cast_btn.clicked.connect(self.pick_cast)
         left = QWidget()
         lbox = QVBoxLayout(left)
         lbox.setContentsMargins(0, 0, 0, 0)
         lbox.addWidget(self.list, 1)
         lbox.addLayout(row1)
         lbox.addLayout(row2)
-        lbox.addWidget(remember_btn)
+        row3 = QHBoxLayout()
+        row3.addWidget(remember_btn, 1)
+        row3.addWidget(cast_btn, 1)
+        lbox.addLayout(row3)
 
         self.editor = ChapterEditor()
         size = remembered("font")
@@ -2077,6 +2221,9 @@ class WritingTab(QWidget):
         same = self.project is not None and self.project.id == pid
         try:
             self.project = writing.Project.read(pid) if pid else None
+            if self.project is not None:
+                # Earlier versions kept review notes on disk; they are for one session now.
+                shutil.rmtree(os.path.join(writing.folder(self.project.id), "review"), ignore_errors=True)
             if self.project is not None and self.project.paragraphs != "lines":
                 writing.to_lines(self.project)
                 self.window.say(f"Writing: \"{self.project.title}\" now has one line per paragraph "
@@ -2222,7 +2369,8 @@ class WritingTab(QWidget):
             item.setData(ROLE, file)
             pending = len(self.editor.items) if file == self.file \
                 else len(writing.read_suggestions(self.project, file))
-            notes = sum(1 for x in (self.editor.notes if file == self.file else writing.read_notes(self.project, file))
+            notes = sum(1 for x in (self.editor.notes if file == self.file
+                                    else self.session_notes.get((self.project.id, file), []))
                         if x.get("status", "open") == "open")
             self.label(item, n, text, status, count, pending, self.memory_mark(file, index)
                        + (f" · {notes} note{'s' if notes != 1 else ''}" if notes else ""))
@@ -2262,7 +2410,8 @@ class WritingTab(QWidget):
         self.saved_text = self.project.chapter(file) if file else ""
         self.loading = True
         dropped = self.editor.load(self.saved_text, writing.read_suggestions(self.project, file) if file else [])
-        gone = self.editor.load_notes(writing.read_notes(self.project, file) if file else [], self.saved_text)
+        gone = self.editor.load_notes(self.session_notes.get((self.project.id, file), []) if file else [],
+                                      self.saved_text)
         if gone:
             self.notes_dirty = True
         self.loading = False
@@ -2278,6 +2427,8 @@ class WritingTab(QWidget):
         self.editor.setReadOnly(file is None)
         self.done_btn.setText("Back to draft" if self.status_of(file) == "done" else "Done")
         self.show_status()
+        if hasattr(self, "talk"):
+            self.talk.chapter_changed()
 
     def status_of(self, file):
         return next((s for f, s in self.project.chapters if f == file), "draft") if self.project else "draft"
@@ -2336,11 +2487,9 @@ class WritingTab(QWidget):
                 self.window.say(f"Writing: the suggestions could not be saved: {e}")
         if self.editor.notes or self.notes_dirty:
             went = self.editor.refresh_notes()
-            try:
-                writing.write_notes(self.project, self.file, self.editor.saved_notes())
-                self.notes_dirty = False
-            except OSError as e:
-                self.window.say(f"Writing: the review notes could not be saved: {e}")
+            # Notes are for this session only: kept while AIcove runs, never written to disk.
+            self.session_notes[(self.project.id, self.file)] = self.editor.saved_notes()
+            self.notes_dirty = False
             if went:
                 self.review.fill()
                 self.relabel()
@@ -2519,6 +2668,19 @@ class WritingTab(QWidget):
             self.fill_list()
         if self.memory_dialog is not None:
             self.memory_dialog.relabel()
+
+    def pick_cast(self):
+        if self.project is None or self.file is None:
+            return
+        self.save()
+        cast = writing.read_page(os.path.join(writing.bible_dir(self.project), "cast.md"))
+        labels = writing.cast_labels(cast)
+        if not labels:
+            QMessageBox.information(self, "Cast", "The cast page has no entries yet (\"## Name\" sections). "
+                                    "Build the story memory or write it in Story memory….")
+            return
+        CastDialog(self, labels, self.project.cast.get(self.file),
+                   writing.cast_found(cast, self.project.chapter(self.file))).exec()
 
     def remember_this(self, file=None):
         """The story memory for one chapter."""

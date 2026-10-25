@@ -2,7 +2,7 @@
 
 # AIcove
 
-**[aicove.dev](https://aicove.dev)**
+**[aicove.dev](https://aicove.dev)** · **[Wiki](https://github.com/overcatbe/aicove/wiki)** (the guide, one page per topic) · **[What's new](CHANGES.md)**
 
 A desktop window for chatting with personas that run on local models
 ([llama.cpp](https://github.com/ggml-org/llama.cpp)), on Linux. One user, one machine, no
@@ -139,6 +139,7 @@ A tool file (Tools tab, "Add tool…" writes the same):
 
     name: Voice configurator
     description: VoxCPM2, pick and tune voices
+    group: Voice
     start: HF_HUB_OFFLINE=1 exec tts-env/bin/python voxcpm_config_ui.py
     folder: ~/voice-ui
     address: http://localhost:7871
@@ -152,7 +153,9 @@ A tool file (Tools tab, "Add tool…" writes the same):
 - **With a `stop` line**: both commands are run and expected to come back, like
   `start: mysite-dev start` / `stop: mysite-dev stop`.
 
-`address` gives the Open button and tells whether the tool runs (something answers there).
+`group` puts the tool under a heading of that name in the Tools tab (tools without one go
+under "Other"); click a heading to fold the group away, and a folded heading says how many of
+its tools run. `address` gives the Open button and tells whether the tool runs (something answers there).
 `terminal: yes` runs start and stop in a terminal window, for commands that ask for a password
 or a yes/no. `stop_everything: yes` lets "Stop everything" stop it. `not_with` names tools
 that are stopped before this one starts. `not_with_model: yes` is for tools that need the GPU
