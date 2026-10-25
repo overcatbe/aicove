@@ -160,13 +160,13 @@ class Face(QWidget):
     model loads. state() says which ("thinking", "writing", "loading" or None)."""
     RING = 5
 
-    def __init__(self, state, parent=None):
+    def __init__(self, state, parent=None, size=CHAT_FACE_SIZE):
         super().__init__(parent)
         self.state = state
         self.pixmap = None
         self.now = None
         self.phase = 0.0
-        self.setFixedSize(CHAT_FACE_SIZE, CHAT_FACE_SIZE)
+        self.setFixedSize(size, size)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.step)
         self.timer.start(40)
@@ -174,6 +174,19 @@ class Face(QWidget):
     def setPixmap(self, pixmap):
         self.pixmap = pixmap
         self.update()
+
+    def show_persona(self, persona):
+        """The persona's picture (or the placeholder), sized for the ring; None: no picture."""
+        if persona is None:
+            self.setPixmap(None)
+            return
+        ratio = self.devicePixelRatioF()
+        side = self.width() - 2 * (self.RING + 1)
+        pixmap = QPixmap(face(persona)).scaled(
+            int(side * ratio), int(side * ratio),
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pixmap.setDevicePixelRatio(ratio)
+        self.setPixmap(pixmap)
 
     def step(self):
         now = self.state() if self.isVisible() else None
@@ -750,13 +763,7 @@ class ChatTab(QWidget):
         return None
 
     def show_face(self):
-        ratio = self.devicePixelRatioF()
-        side = CHAT_FACE_SIZE - 2 * (Face.RING + 1)
-        pixmap = QPixmap(face(self.persona)).scaled(
-            int(side * ratio), int(side * ratio),
-            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        pixmap.setDevicePixelRatio(ratio)
-        self.face.setPixmap(pixmap)
+        self.face.show_persona(self.persona)
 
     def fill_models(self, keep=False):
         """Every launcher: the persona's own first (its models, then those it ran on here), then a line, then the others (this machine's,

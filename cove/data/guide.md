@@ -380,8 +380,9 @@ each chapter once and keeps notes, and those go along with everything you ask in
 
 **The changes**: nothing a model writes is in your chapter until you accept it. Put the cursor
 in a change or right-click it: **✓ Accept**, **✗ Decline**, **✎ Edit…** (change it, then
-take it). The bar above the text has the same, ◀ ▶ to go from one to the next, and **Accept
-all** / **Decline all**; it also says what the change at the cursor is ("“upon” → “on”",
+take it); the cursor then goes on to the next change. The bar above the text has the same, ◀ ▶
+to go from one to the next, and **Accept all** / **Decline all** (they ask first only while you
+haven't decided any change by hand yet; after that they take the rest); it also says what the change at the cursor is ("“upon” → “on”",
 "space → ¶"). A change of only spaces or line breaks, which can't be seen, marks its whole
 line. Changes wait across restarts and chapter switches; the chapter list shows how many each
 chapter has. You can type around them as usual.

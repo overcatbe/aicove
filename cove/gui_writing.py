@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import chat, facts, gui_state, launchers, personas, summary, writing
-from .gui_chat import to_html
+from .gui_chat import Face, to_html
 from .settings import STATE_DIR
 
 ROLE = Qt.ItemDataRole.UserRole
@@ -186,6 +186,7 @@ class ChapterEditor(TextBox):
         """The file's text with its suggestions, put together in one go. Returns how many no
         longer fit the text."""
         self.items = []
+        self.decided = 0           # changes accepted or declined one by one since the chapter opened
         self._snap = None
         placed, last_end, dropped = [], -1, 0
         for item in sorted(found, key=lambda i: i["at"]):
@@ -262,19 +263,31 @@ class ChapterEditor(TextBox):
         c.insertText(text)
 
     def accept(self, s, new_text=None):
+        pos = s.a.position()
         c = QTextCursor(self.document())
         c.beginEditBlock()
         if new_text is not None:
             self.cut(*s.new(), new_text)
         self.cut(*s.old())
         c.endEditBlock()
-        self.items.remove(s)
-        self.paint()
-        self.items_changed.emit()
+        self.decided_one(s, pos)
 
     def decline(self, s):
+        pos = s.a.position()
         self.cut(*s.new())
+        self.decided_one(s, pos)
+
+    def decided_one(self, s, pos):
+        """One change is done with: on to the next one (after where it was, else the first)."""
         self.items.remove(s)
+        self.decided = getattr(self, "decided", 0) + 1
+        order = sorted(self.items, key=lambda s: s.a.position())
+        if order:
+            target = next((t for t in order if t.a.position() >= pos), order[0])
+            c = self.textCursor()
+            c.setPosition(target.a.position())
+            self.setTextCursor(c)
+            self.centerCursor()
         self.paint()
         self.items_changed.emit()
 
@@ -607,7 +620,10 @@ class TalkPanel(QWidget):
         self.load_btn = QPushButton("Load")
         self.load_btn.setToolTip("Start this persona's model")
         self.load_btn.clicked.connect(lambda: self.load_model())
+        # The persona's picture; its ring pulses while the model thinks, writes or loads.
+        self.face = Face(self.working, size=64)
         row = QHBoxLayout()
+        row.addWidget(self.face)
         row.addWidget(self.who, 1)
         row.addWidget(self.load_btn)
         self.template = QComboBox()
@@ -719,6 +735,7 @@ class TalkPanel(QWidget):
         self.who.blockSignals(True)
         self.who.setCurrentIndex(i if i >= 0 else 0)
         self.who.blockSignals(False)
+        self.face.show_persona(self.persona())
         self.load_talk()
         self.show_state()
 
@@ -729,7 +746,16 @@ class TalkPanel(QWidget):
         except OSError:
             return None
 
+    def working(self):
+        """What the model does for the talk right now, for the ring around the face."""
+        if self.worker is not None:
+            return "writing" if self.live else "thinking"
+        if self.waiting is not None or self.window.busy():
+            return "loading"
+        return None
+
     def pick_persona(self, *_):
+        self.face.show_persona(self.persona())
         p = self.tab.project
         if p is not None and self.who.currentData():
             p.persona = self.who.currentData()
@@ -2603,8 +2629,11 @@ class WritingTab(QWidget):
 
     def all_items(self, accept):
         n = len(self.editor.items)
-        if n and QMessageBox.question(self, "Writing", f"{'Accept' if accept else 'Decline'} all {n} changes "
-                                      "in this chapter?") == QMessageBox.StandardButton.Yes:
+        # Asked only before any change was decided by hand: after that you are going through
+        # them, and "all" means the rest.
+        if n and (getattr(self.editor, "decided", 0) or QMessageBox.question(
+                self, "Writing", f"{'Accept' if accept else 'Decline'} all {n} changes in this chapter?")
+                == QMessageBox.StandardButton.Yes):
             self.editor.every(accept)
 
     def suggest(self, file, items):

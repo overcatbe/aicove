@@ -1,5 +1,13 @@
 # What's new
 
+## Since v0.3
+
+**Writing**
+- The persona's picture is next to its name in the talk panel, with the ring that pulses while
+  the model thinks, writes or loads.
+- After Accept, Decline or Edit the cursor goes on to the next change. Accept all / Decline all
+  ask only until you have decided a change by hand; after that they take the rest.
+
 ## v0.3 (2026-10-25)
 
 A lot was reworked since v0.22 (2026-10-19): agents stand on their own, personas keep settings per model,
