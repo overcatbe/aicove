@@ -2,11 +2,22 @@
 
 ## Since v0.3
 
+**Pictures**
+- The persona writes the image model's whole prompt itself: from your one-line request and what
+  the chat is about, 150-250 words with the camera, depth in layers, named light with a warm/cold
+  contrast, and the important things in the middle of the frame (pictures often get cropped at
+  the top and bottom). What you asked for stays as you said it, and there is no text in the
+  picture unless you ask for it. Same image model, much better pictures.
+
+**Chats**
+- **Delete** removes a chat for good, with its audio and pictures (no trash any more).
+
 **Writing**
 - The persona's picture is next to its name in the talk panel, with the ring that pulses while
   the model thinks, writes or loads.
 - After Accept, Decline or Edit the cursor goes on to the next change. Accept all / Decline all
   ask only until you have decided a change by hand; after that they take the rest.
+- **New chapter** goes at the end, not after the selected one.
 
 ## v0.3 (2026-10-25)
 

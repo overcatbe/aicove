@@ -77,10 +77,9 @@ class Chat:
         pictures.tidy(self.persona)
 
     def delete(self):
-        """Into the persona's trash, like a deleted persona. Its audio is deleted."""
-        trash = os.path.join(personas.TRASH_DIR, "chats", self.persona)
-        os.makedirs(trash, exist_ok=True)
-        os.replace(self.path, os.path.join(trash, self.id + ".json"))
+        """Gone for good, with its audio and pictures."""
+        if os.path.exists(self.path):
+            os.remove(self.path)
         voice.tidy(self.persona)
         pictures.tidy(self.persona)
 

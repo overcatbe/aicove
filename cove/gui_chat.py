@@ -852,7 +852,7 @@ class ChatTab(QWidget):
         if self.chat is None or self.worker:
             return
         answer = QMessageBox.question(self, "Delete chat", f"Delete \"{self.chat.title}\"?\n\n"
-                                      f"It is kept in {os.path.join(personas.TRASH_DIR, 'chats')}.")
+                                      "It is gone for good.")
         if answer == QMessageBox.StandardButton.Yes:
             self.chat.delete()
             self.chat = None

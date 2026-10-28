@@ -2557,7 +2557,7 @@ class WritingTab(QWidget):
         title, ok = QInputDialog.getText(self, "New chapter", "Title:",
                                          text=f"Chapter {len(self.project.chapters) + 1}")
         if ok:
-            file = self.project.add_chapter(title.strip() or "Untitled", after=self.selected())
+            file = self.project.add_chapter(title.strip() or "Untitled")
             self.fill_list(select=file)
             self.editor.setFocus()
 

@@ -58,8 +58,8 @@ chats of the one you picked; on the right the chat.
 - **▸ Thinking** opens what a thinking model considered before answering. It is kept with the
   answer but never sent back to the model.
 
-Every chat is a file in the persona's folder, `~/AIcove/personas/<persona>/chats/`. Deleted
-chats go to `~/AIcove/personas/.trash/chats/`. **Rename…** changes a chat's title; new chats are
+Every chat is a file in the persona's folder, `~/AIcove/personas/<persona>/chats/`. **Delete**
+removes a chat for good. **Rename…** changes a chat's title; new chats are
 named after their first message.
 
 - A persona with file access shows its steps in the chat: **▸ Read /etc/fstab**, **▸ Looked into
@@ -274,7 +274,7 @@ and stops. While you write, nothing runs.
   and bold as `*italics*` and `**bold**`. Changed text is saved once a minute, on **Ctrl+S**,
   and when you go to another chapter or tab or close the window. A model always reads the text
   as it is in the editor when you ask, saved or not.
-- **New chapter** goes after the selected one; ▲ ▼ move it; **Done** marks it finished for now
+- **New chapter** goes at the end; ▲ ▼ move it; **Done** marks it finished for now
   (and tells you when its story memory is out of date; it starts nothing); **Remember** reads
   it into the story memory; **Cast…** picks who is in the chapter (see Story memory);
   **Delete** moves it to the project's `.trash` folder.

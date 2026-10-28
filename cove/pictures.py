@@ -19,15 +19,30 @@ FOLDER = "pictures"   # in the persona's chats/
 SHAPES = {"square": "1024x1024", "portrait": "832x1216", "landscape": "1216x832"}
 HINT = ("You can make pictures with make_picture. Use it when the user asks for a picture, or when "
         "showing something says more than words. The user sees the picture in the chat by itself: don't "
-        "put the picture or a link to it in your answer, and don't describe it again at length.")
+        "put the picture or a link to it in your answer, and don't describe it again at length.\n"
+        "The user's request is often one line. The image model knows nothing of this chat, so you write "
+        "its whole prompt, as a film's director of photography would, using what the picture is for (the "
+        "article, story or idea of this chat). The description you pass to make_picture:\n"
+        "- 150 to 250 words of English, one flowing paragraph.\n"
+        "- Everything the user asked for, as they said it: their objects stay their objects (hard disks "
+        "stay hard disks), their number of people stays exact. Add nothing that goes against it.\n"
+        "- Style: a photo unless the user asks for something else.\n"
+        "- The camera: where it stands, how wide, which lens.\n"
+        "- Depth in layers: what is in the foreground, the middle and the background.\n"
+        "- Light with named sources and colours, and a contrast, e.g. a warm desk lamp against a cold "
+        "blue city, the last orange light on the horizon. Time of day, weather, mood.\n"
+        "- Composition: the subject, faces and everything important in the middle band of the frame; the "
+        "top and bottom edges only sky, ceiling, floor or table, because the picture may be cropped there.\n"
+        "- No text, letters, signs or labels in the picture unless the user asks for them; then the exact "
+        "words in quotes.")
 
 TOOLS = [{"type": "function", "function": {
     "name": "make_picture",
     "description": "Make a picture and show it to the user. Takes up to a minute or two.",
     "parameters": {"type": "object", "properties": {
         "description": {"type": "string", "description":
-                        "What the picture shows, in English, detailed: subject, what it looks like, setting, "
-                        "style (photo, painting, drawing...), light, mood, composition. Several sentences."},
+                        "The full prompt for the image model, 150-250 words of English, written as the "
+                        "instructions about pictures say."},
         "shape": {"type": "string", "enum": list(SHAPES), "description": "square (default), portrait or landscape."}},
         "required": ["description"]}}}]
 NAMES = {"make_picture"}
