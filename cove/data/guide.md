@@ -612,12 +612,31 @@ sees it. Nobody can reset it: without it the entries can't be read.
 
 - Click an entry to open it. **Copy** next to the password copies it, and so does a
   double-click on the entry. The clipboard is emptied again after 45 seconds.
-- **New…**: name, user, password, address, notes, then Save. A `/` in the name makes a group,
-  for example `server/database`.
+- **New…**: type, name, user, password, address, notes, then Save. A `/` in the name makes a
+  group, for example `example.com/me@example.com`.
 - **Generate** makes a random password of 20 characters.
 - **Lock** makes GnuPG forget the master password now.
 - Every change is kept in the store's history, so an overwritten or deleted entry can be
   recovered.
+
+**Types**
+
+Every entry has a type, the folder it is kept in: web, mail, social, shopping, finance, gov,
+games, media, app, wifi, pc, server, db, vpn, crypto or other. The list is grouped by type;
+click a type's heading to fold it away. The menu above the list shows one type only. The type
+menu in front of the name moves an entry to another type when you save. Older entries that
+aren't in a type folder are listed under "(no type)".
+
+**Bringing in a browser's passwords**
+
+1. Export them from the browser. Chromium and Chrome: Settings → Passwords → Export; Firefox:
+   Passwords → ⋯ → Export. Bitwarden and most other password managers can export the same way.
+2. **More → Import CSV** and pick the file.
+3. The logins are listed without their passwords, each with a type from its site. Untick what
+   you don't want, change types (select several rows and give them one type at once), rename
+   if you like. A login that is already in the store comes unticked.
+4. **Import the ticked ones**. GnuPG may ask for the master password once.
+5. Say yes to shredding the file: it holds every password in plain text.
 
 **A second machine**
 
@@ -646,6 +665,13 @@ On a machine where AIcove runs for the first time, it opens on this tab with wha
 
 **Keyboard buttons**: the buttons in the top bar that switch the keyboard layout. See the
 topic *Keyboard*.
+
+**Which llama-server**: AIcove doesn't bring llama.cpp; install it as llama.cpp's own install
+guide describes, or take a ready build from its Releases page on GitHub. Pick the build for your
+graphics card: CUDA for NVIDIA, ROCm for AMD, SYCL for Intel, Vulkan for any of them (Vulkan is
+a standard that the normal drivers of all three speak; the vendor's own build is usually a bit
+faster), CPU without one. What fits: a model file needs about its own size in memory, plus
+1–3 GB for the conversation; the Launchers tab shows the estimate for each launcher.
 
 **Model reachable from**: "this machine only" is the safe choice. "Everyone on the network"
 lets other devices talk to the loaded model directly, without a password. Takes effect when the
