@@ -108,6 +108,53 @@ The top bar can hold buttons that switch the keyboard layout: `keyboard` is a li
 `"Label | command"` lines, and `keyboard_now` an optional command whose answer names the
 active one. Empty = no buttons.
 
+### Getting llama.cpp
+
+AIcove runs the models with llama.cpp's `llama-server`; it is not part of AIcove. Install it the
+way [llama.cpp describes](https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md)
+(Homebrew, Nix, conda-forge), take a ready build from its
+[Releases page](https://github.com/ggml-org/llama.cpp/releases), or
+[build it yourself](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md). Then point
+the Settings tab at `llama-server`.
+
+The builds differ in how they talk to the graphics card. Pick the one for yours:
+
+- **CUDA** for NVIDIA. The fastest there.
+- **ROCm** for AMD. Often the fastest on AMD, but needs AMD's ROCm installed.
+- **SYCL** for Intel graphics.
+- **Vulkan** works on all three. Vulkan is a standard graphics interface, not an AMD thing: the
+  normal drivers of NVIDIA, AMD and Intel all speak it, so there is nothing extra to install.
+  It is the safe choice when unsure, or when the vendor's own build gives trouble; on NVIDIA
+  and AMD the vendor's build is usually somewhat faster.
+- **CPU** without a graphics card. It works, only slower.
+
+### What can I run?
+
+Whatever fits in your memory. A model file is about as big as the memory it needs, plus 1–3 GB
+for the conversation. Rough sizes for common hardware (rules of thumb, not measurements):
+
+| Your machine | Comfortable model files |
+|---|---|
+| 8 GB graphics card | up to ~6 GB (about 7–9B models at Q4–Q6) |
+| 12–16 GB graphics card | up to ~12 GB (about 14–24B) |
+| 24 GB graphics card | up to ~20 GB (about 32B) |
+| No graphics card, 32–64 GB RAM | "MoE" models with few active parameters (such as 30B-A3B) run usefully on the CPU |
+| Unified memory, 96–128 GB (NVIDIA DGX Spark, AMD Ryzen AI Max, Apple) | the big ones: 70–120B and more |
+
+A model that doesn't fit the graphics card can run partly from normal RAM (`gpu_layers: auto`):
+it still works, just slower. **Add model** shows each file's size before it downloads, so pick
+one that fits. Which models are good changes every month; the sizes don't.
+
+### A big machine somewhere else
+
+AIcove can start a model on another computer and chat with it from yours: put the big models on
+a DGX Spark or a GPU box, and use them from the laptop. That machine needs AIcove and its own
+launchers, and yours an ssh key for it that works without a password (`ssh gpubox true` must
+just work). On the Launchers tab, **From another machine…** asks for its name (a `Host` in
+`~/.ssh/config`) and adds its launchers here; the model runs there and comes to this machine
+through an ssh tunnel, so the chat doesn't know the difference. **Update from other machines**
+picks up launchers added there later.
+
 ## Where things are
 
 | What | Where |
@@ -131,6 +178,15 @@ All of these are plain text and can be edited by hand. A launcher file:
 the settings. `gpu_layers` is `all`, `auto` (as much as fits, the rest runs from normal RAM)
 or a number of layers; without the line the default from the settings is used. `options` goes
 to llama-server as written.
+
+A launcher of another machine looks like this (**From another machine…** writes it):
+
+    name: Qwen3.6 35B (big card)
+    host: gpubox
+    launcher: qwen36
+
+`host` is the machine as ssh knows it, `launcher` its launcher there (without the line, the
+same name as this file). `name` is optional; without it the other machine's name is used.
 
 Launchers belong to one machine, because the model files differ. Everything in `~/AIcove/` is
 yours and moves by copying the folder. A persona names its launchers (`models: a, b` in its
