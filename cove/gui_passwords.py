@@ -1,22 +1,38 @@
 # The Passwords tab: the entries of the password store (see passwords.py) with search, copy
-# and edit. GnuPG runs on the side, so its own window can ask for the master password while
-# this one stays alive. A password goes into the form and the clipboard, never anywhere else.
+# and edit, grouped by type (the top folder), and an import of browser exports. GnuPG runs on the
+# side, so its own window can ask for the master password while this one stays alive. A password
+# goes into the form and the clipboard, never anywhere else.
 
+import csv
 import getpass
 import os
 
 from PyQt6.QtCore import QMimeData, QProcess, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QFontDatabase
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
+    QPlainTextEdit, QPushButton, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
-from . import passwords
+from . import gui_state, passwords
 
 # How long a copied password stays in the clipboard.
 CLIPBOARD_SECONDS = 45
+NAME_ROLE = Qt.ItemDataRole.UserRole        # list items: the entry's full name
+HEAD_ROLE = Qt.ItemDataRole.UserRole + 1    # list headings: their type ("" = entries without one)
+
+
+def type_menu(box, everything=None):
+    """Fill a combo box with the types (item data = the folder); everything = a first item for all."""
+    if everything:
+        box.addItem(everything, None)
+    for kind, desc in passwords.TYPES:
+        box.addItem(kind, kind)
+        box.setItemData(box.count() - 1, desc, Qt.ItemDataRole.ToolTipRole)
+    box.addItem("(no type)", "")
+    box.setItemData(box.count() - 1, "Entries that aren't in a type folder", Qt.ItemDataRole.ToolTipRole)
 
 
 class PasswordsTab(QWidget):
@@ -67,6 +83,10 @@ class PasswordsTab(QWidget):
         return page
 
     def main_page(self):
+        self.type_box = QComboBox()
+        type_menu(self.type_box, "All types")
+        self.type_box.setToolTip("Show only the entries of one type")
+        self.type_box.currentIndexChanged.connect(self.fill_list)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search…")
         self.search.setClearButtonEnabled(True)
@@ -74,12 +94,14 @@ class PasswordsTab(QWidget):
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self.on_select)
         self.list.itemDoubleClicked.connect(self.copy_on_double_click)
-        self.list.setToolTip("Double-click copies the password")
+        self.list.itemClicked.connect(self.fold)
+        self.list.setToolTip("Double-click copies the password; a click on a type folds it away")
         new_btn = QPushButton("New…")
         new_btn.clicked.connect(self.new_entry)
         left = QWidget()
         lbox = QVBoxLayout(left)
         lbox.setContentsMargins(0, 0, 0, 0)
+        lbox.addWidget(self.type_box)
         lbox.addWidget(self.search)
         lbox.addWidget(self.list, 1)
         lbox.addWidget(new_btn)
@@ -87,8 +109,12 @@ class PasswordsTab(QWidget):
         self.form = QWidget()
         grid = QGridLayout(self.form)
         grid.setColumnStretch(1, 1)
+        self.kind = QComboBox()
+        type_menu(self.kind)
+        self.kind.setToolTip("The type: the folder the entry is kept in")
+        self.kind.currentIndexChanged.connect(self.changed)
         self.name = QLineEdit()
-        self.name.setPlaceholderText("e.g. myserver/mariadb root — a / makes a group")
+        self.name.setPlaceholderText("e.g. amazon.de/me@example.com — a / makes a group")
         self.user = QLineEdit()
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -111,8 +137,12 @@ class PasswordsTab(QWidget):
         copy_user.clicked.connect(lambda: self.copy(self.user.text(), "User name", secret=False))
         open_url = QPushButton("Open")
         open_url.clicked.connect(self.open_url)
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.addWidget(self.kind)
+        name_row.addWidget(self.name, 1)
         grid.addWidget(QLabel("Name"), 0, 0)
-        grid.addWidget(self.name, 0, 1, 1, 4)
+        grid.addLayout(name_row, 0, 1, 1, 4)
         grid.addWidget(QLabel("User"), 1, 0)
         grid.addWidget(self.user, 1, 1, 1, 3)
         grid.addWidget(copy_user, 1, 4)
@@ -160,6 +190,8 @@ class PasswordsTab(QWidget):
         self.sync_btn.clicked.connect(lambda: self.sync())
         more = QPushButton("More")
         menu = QMenu(more)
+        menu.addAction("Import CSV (browser export)…", self.import_csv)
+        menu.addSeparator()
         menu.addAction("Set sync address…", self.set_sync_address)
         menu.addAction("Sync: where both changed, keep this machine's", lambda: self.sync("mine"))
         menu.addAction("Sync: where both changed, take the other machine's", lambda: self.sync("theirs"))
@@ -221,16 +253,50 @@ class PasswordsTab(QWidget):
         self.sync_btn.setEnabled(bool(url))
 
     def fill_list(self, *_):
+        """The entries under a heading per type; one type only when the menu says so. Folded
+        types stay folded unless something is searched for."""
         words = self.search.text().lower().split()
+        want = self.type_box.currentData()
+        folded = set() if words else set(gui_state.remembered("password_types_folded", []))
+        groups = {}
+        for name in self.names or []:
+            kind, rest = passwords.split_name(name)
+            if (want is None or kind == want) and all(w in name.lower() for w in words):
+                groups.setdefault(kind, []).append((name, rest))
+        order = passwords.TYPE_NAMES + [""]
         self.switching = True
         self.list.clear()
-        for name in self.names or []:
-            if all(w in name.lower() for w in words):
-                self.list.addItem(name)
-        match = self.list.findItems(self.entry or "", Qt.MatchFlag.MatchExactly) if self.entry else []
-        if match:
-            self.list.setCurrentItem(match[0])
+        current = None
+        for kind in sorted(groups, key=order.index):
+            if want is None:
+                head = QListWidgetItem(f"{'▸' if kind in folded else '▾'} {kind or '(no type)'}  "
+                                       f"({len(groups[kind])})")
+                head.setData(HEAD_ROLE, kind)
+                head.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                font = head.font()
+                font.setBold(True)
+                head.setFont(font)
+                self.list.addItem(head)
+                if kind in folded:
+                    continue
+            for name, rest in groups[kind]:
+                item = QListWidgetItem(("    " if want is None else "") + rest)
+                item.setData(NAME_ROLE, name)
+                self.list.addItem(item)
+                if name == self.entry:
+                    current = item
+        if current is not None:
+            self.list.setCurrentItem(current)
         self.switching = False
+
+    def fold(self, item):
+        kind = item.data(HEAD_ROLE)
+        if kind is None or self.search.text().strip():
+            return
+        folded = set(gui_state.remembered("password_types_folded", []))
+        folded ^= {kind}
+        gui_state.remember("password_types_folded", sorted(folded))
+        self.fill_list()
 
     def empty_form(self, hint=""):
         self.entry, self.baseline = None, None
@@ -238,6 +304,7 @@ class PasswordsTab(QWidget):
         for w in (self.name, self.user, self.password, self.url):
             w.clear()
         self.notes.clear()
+        self.kind.setCurrentIndex(self.kind.findData(self.type_box.currentData() or "web"))
         self.show_box.setChecked(False)
         self.switching = False
         self.form.setEnabled(False)
@@ -245,7 +312,8 @@ class PasswordsTab(QWidget):
         self.changed()
 
     def values(self):
-        return {"name": self.name.text().strip(), "user": self.user.text().strip(),
+        kind, rest = self.kind.currentData(), self.name.text().strip()
+        return {"name": f"{kind}/{rest}" if kind else rest, "user": self.user.text().strip(),
                 "password": self.password.text(), "url": self.url.text().strip(),
                 "notes": self.notes.toPlainText().strip("\n")}
 
@@ -318,8 +386,8 @@ class PasswordsTab(QWidget):
     def on_select(self, current, _previous):
         if self.switching or current is None:
             return
-        name = current.text()
-        if name == self.entry:
+        name = current.data(NAME_ROLE)
+        if name is None or name == self.entry:
             return
         if not self.resolve():
             self.fill_list()
@@ -338,8 +406,10 @@ class PasswordsTab(QWidget):
                 self.switching = False
                 return
             entry = passwords.parse_entry(out.decode(errors="replace").rstrip("\n"))
+            kind, rest = passwords.split_name(name)
             self.switching = True
-            self.name.setText(name)
+            self.kind.setCurrentIndex(self.kind.findData(kind))
+            self.name.setText(rest)
             self.user.setText(entry["user"])
             self.password.setText(entry["password"])
             self.url.setText(entry["url"])
@@ -356,7 +426,9 @@ class PasswordsTab(QWidget):
         self.gpg(passwords.decrypt_args(name), opened)
 
     def copy_on_double_click(self, item):
-        if self.entry == item.text() and not self.busy():
+        if item.data(NAME_ROLE) is None:
+            return
+        if self.entry == item.data(NAME_ROLE) and not self.busy():
             self.copy(self.baseline["password"], "Password")
         else:
             self.copy_when_open = True
@@ -394,7 +466,8 @@ class PasswordsTab(QWidget):
         v = self.values()
         name, old = v["name"], self.entry
         if not passwords.NAME.fullmatch(name):
-            return self.warn("The name can have letters, digits, spaces and . _ @ + -, and / for groups.")
+            return self.warn("The name can't be empty and can have letters, digits, spaces and . _ @ + -, "
+                             "and / for groups.")
         if not v["password"]:
             return self.warn("The password is empty.")
         if "\n" in v["password"]:
@@ -454,6 +527,79 @@ class PasswordsTab(QWidget):
         url = self.url.text().strip()
         if url:
             QDesktopServices.openUrl(QUrl(url if "://" in url else "https://" + url))
+
+    # --- importing a browser export ---------------------------------------------
+
+    def import_csv(self):
+        if self.busy() or not self.resolve():
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import passwords", os.path.expanduser("~/Downloads"),
+                                              "CSV files (*.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            rows = passwords.read_csv(path)
+        except (OSError, ValueError, UnicodeDecodeError, csv.Error) as e:
+            return self.warn(f"Can't read {path}: {e}")
+        if not rows:
+            return self.warn(f"There are no logins with a password in {path}.")
+        dialog = ImportDialog(self, path, rows)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.chosen:
+            return
+        self.empty_form()
+        self.import_next(dialog.chosen, path, 0)
+
+    def import_next(self, todo, path, done):
+        """Encrypt the chosen logins one after the other, then one commit for all of them."""
+        if not todo:
+            return self.imported(path, done)
+        e = todo[0]
+        name = f"{e['type']}/{e['name']}"
+        dest = passwords.path_of(name)
+        tmp = dest + ".new"
+        try:
+            os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        except OSError as err:
+            return self.import_stopped(name, str(err), done)
+
+        def saved(code, _out, err):
+            if code != 0:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                return self.import_stopped(name, self.complaint(err), done)
+            os.replace(tmp, dest)
+            self.import_next(todo[1:], path, done + 1)
+
+        self.hint.setText(f"Importing: {done} of {done + len(todo)} done…")
+        self.gpg(passwords.encrypt_args(tmp), saved,
+                 passwords.format_entry(e["password"], e["user"], e["url"], e["notes"]).encode())
+
+    def import_stopped(self, name, why, done):
+        if done:
+            passwords.commit(f"Import {done} entries from a CSV file")
+        self.names = None
+        self.refresh()
+        self.empty_form("Pick an entry, or New… for a new one.")
+        self.warn(f"The import stopped at {name}: {why}\n\n{done} entries were imported before it.")
+
+    def imported(self, path, done):
+        passwords.commit(f"Import {done} entries from a CSV file")
+        self.window.say(f"{done} password entries imported from {path}.")
+        self.names = None
+        self.refresh()
+        self.empty_form("Pick an entry, or New… for a new one.")
+        if QMessageBox.question(
+                self, "Import done", f"{done} entries are in the store now.\n\n{path} still has all of "
+                "them in plain text. Shred it now (overwritten, then deleted)?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        ok, why = passwords.shred(path)
+        if ok:
+            self.window.say(f"{path} shredded.")
+        else:
+            self.warn(f"{path} couldn't be shredded: {why}\nDelete it by hand.")
 
     # --- clipboard -----------------------------------------------------------
 
@@ -613,3 +759,112 @@ class PasswordsTab(QWidget):
             self.refresh()
 
         self.gpg(passwords.import_key_args(path), imported)
+
+
+class ImportDialog(QDialog):
+    """The logins of a CSV export, without their passwords: tick, type and name each one.
+    chosen is the ticked rows afterwards, with the type and name as edited."""
+
+    def __init__(self, parent, path, rows):
+        super().__init__(parent)
+        self.rows, self.chosen = rows, []
+        self.setWindowTitle("Import passwords")
+        self.resize(1000, 640)
+        taken = sum(r["exists"] for r in rows)
+        note = QLabel(f"<b>{len(rows)} logins</b> in {path.replace('&', '&amp;').replace('<', '&lt;')}. "
+                      "The passwords aren't shown. Each one gets a type from its site; change it where it "
+                      "doesn't fit, and untick what you don't want."
+                      + (f"<br>{taken} are in the store already and are unticked: importing one again "
+                         "needs another name." if taken else ""))
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.TextFormat.RichText)
+        self.table = QTableWidget(len(rows), 5)
+        self.table.setHorizontalHeaderLabels(["", "Type", "Name", "User", "Address"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        head = self.table.horizontalHeader()
+        head.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        head.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        for r, row in enumerate(rows):
+            tick = QTableWidgetItem()
+            tick.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            tick.setCheckState(Qt.CheckState.Unchecked if row["exists"] else Qt.CheckState.Checked)
+            self.table.setItem(r, 0, tick)
+            kind = QComboBox()
+            type_menu(kind)
+            kind.removeItem(kind.findData(""))
+            kind.setCurrentIndex(kind.findData(row["type"]))
+            self.table.setCellWidget(r, 1, kind)
+            self.table.setItem(r, 2, QTableWidgetItem(row["name"]))
+            for c, field in ((3, "user"), (4, "url")):
+                item = QTableWidgetItem(row[field])
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, c, item)
+            if row["exists"]:
+                self.table.item(r, 2).setToolTip("There is an entry with this name already")
+        self.table.resizeColumnToContents(0)
+        self.table.resizeColumnToContents(1)
+        self.table.setColumnWidth(3, 220)
+
+        self.bulk = QComboBox()
+        type_menu(self.bulk)
+        self.bulk.removeItem(self.bulk.findData(""))
+        apply = QPushButton("Give the selected rows this type")
+        apply.clicked.connect(self.apply_type)
+        all_on = QPushButton("Tick all")
+        all_on.clicked.connect(lambda: self.tick_all(True))
+        all_off = QPushButton("Untick all")
+        all_off.clicked.connect(lambda: self.tick_all(False))
+        tools = QHBoxLayout()
+        tools.addWidget(self.bulk)
+        tools.addWidget(apply)
+        tools.addStretch(1)
+        tools.addWidget(all_on)
+        tools.addWidget(all_off)
+        go = QPushButton("Import the ticked ones")
+        go.setDefault(True)
+        go.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        bar.addWidget(cancel)
+        bar.addWidget(go)
+        box = QVBoxLayout(self)
+        box.addWidget(note)
+        box.addLayout(tools)
+        box.addWidget(self.table, 1)
+        box.addLayout(bar)
+
+    def apply_type(self):
+        kind = self.bulk.currentData()
+        for r in sorted({i.row() for i in self.table.selectedIndexes()}):
+            box = self.table.cellWidget(r, 1)
+            box.setCurrentIndex(box.findData(kind))
+
+    def tick_all(self, on):
+        for r in range(self.table.rowCount()):
+            self.table.item(r, 0).setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+
+    def accept(self):
+        have = {n.lower() for n in passwords.entries()}
+        chosen, seen = [], set()
+        for r, row in enumerate(self.rows):
+            if self.table.item(r, 0).checkState() != Qt.CheckState.Checked:
+                continue
+            rest = self.table.item(r, 2).text().strip().strip("/")
+            name = f"{self.table.cellWidget(r, 1).currentData()}/{rest}"
+            problem = ("can't be used as a name: letters, digits, spaces and . _ @ + -, and / for groups"
+                       if not passwords.NAME.fullmatch(name) else
+                       "is in the store already" if name.lower() in have else
+                       "is in the list twice" if name.lower() in seen else None)
+            if problem:
+                self.table.selectRow(r)
+                self.table.scrollToItem(self.table.item(r, 2))
+                return QMessageBox.warning(self, "Import passwords", f"Row {r + 1}: {name} {problem}.")
+            seen.add(name.lower())
+            chosen.append({**row, "type": name.split("/", 1)[0], "name": rest})
+        if not chosen:
+            return QMessageBox.warning(self, "Import passwords", "Nothing is ticked.")
+        self.chosen = chosen
+        super().accept()

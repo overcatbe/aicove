@@ -2,6 +2,14 @@
 
 ## Since v0.3
 
+**Passwords**
+- Entries have a **type**, the top folder: web, mail, social, shopping, finance, gov, games,
+  media, app, wifi, pc, server, db, vpn, crypto, other. The list is grouped by type with
+  headings that fold away, the menu above it shows one type, and the form has a type menu.
+- **More → Import CSV** brings in a browser or password-manager export: the logins are listed
+  without their passwords, each with a type guessed from its site, to untick, retype or rename;
+  then they are encrypted and committed at once, and the CSV can be shredded.
+
 **Pictures**
 - The persona writes the image model's whole prompt itself: from your one-line request and what
   the chat is about, 150-250 words with the camera, depth in layers, named light with a warm/cold

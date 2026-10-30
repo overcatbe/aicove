@@ -3,7 +3,8 @@
 # without AIcove:
 #
 #   .gpg-id            the key everything is encrypted for
-#   <name>.gpg         line 1 the password, then "user: ...", "url: ...", then free notes
+#   <type>/<name>.gpg  line 1 the password, then "user: ...", "url: ...", then free notes;
+#                      the top folder is the type (TYPES: web, mail, server, ...)
 #   .git/              every change is a commit; "Sync" pulls and pushes it
 #
 # AIcove never sees the master password: GnuPG asks for it in its own window and remembers
@@ -14,6 +15,7 @@
 #   aicove passwords sync mine | theirs    the same, and where an entry was changed on both
 #                            sides this machine's | the other version counts
 
+import csv
 import os
 import re
 import secrets
@@ -21,6 +23,7 @@ import shlex
 import shutil
 import string
 import subprocess
+import urllib.parse
 
 from .settings import S
 
@@ -30,6 +33,61 @@ URL_KEYS = ("url", "address")
 # Extra GnuPG options, for testing with a key that needs no window.
 GPG_EXTRA = shlex.split(os.environ.get("AICOVE_GPG_OPTS", ""))
 ALPHABET = string.ascii_letters + string.digits + "-_.!+="
+
+# The types: an entry's top folder. (folder, what goes in it)
+TYPES = [
+    ("web", "website logins"),
+    ("mail", "email accounts"),
+    ("social", "Facebook, Instagram, Reddit, Discord…"),
+    ("shopping", "shops"),
+    ("finance", "banks, PayPal, Revolut…"),
+    ("gov", "gov.gr, TAXISnet, EFKA, FinanzOnline…"),
+    ("games", "Steam, GOG, Epic, Nexus…"),
+    ("media", "Netflix, Spotify…"),
+    ("app", "programs and services that aren't a website"),
+    ("wifi", "Wi-Fi networks"),
+    ("pc", "your computers: root, your own user"),
+    ("server", "your servers"),
+    ("db", "database users"),
+    ("vpn", "VPN, WireGuard"),
+    ("crypto", "wallets, exchanges, seed phrases"),
+    ("other", "everything else"),
+]
+TYPE_NAMES = [t for t, _ in TYPES]
+
+# The type an imported login gets from its site (the first that fits); web without one.
+# "name." starts a part of the address, "name.tld" is that domain or one below it, a word
+# without a dot can be anywhere.
+SITE_TYPES = [
+    ("mail", ("mail.", "gmail.", "accounts.google.com", "outlook.", "hotmail.", "live.com", "proton.me",
+              "protonmail.", "gmx.", "web.de", "yahoo.", "icloud.com", "zoho.", "tutanota.", "tuta.", "posteo.")),
+    ("social", ("facebook.", "instagram.", "twitter.", "x.com", "reddit.", "linkedin.", "tiktok.",
+                "discord.", "mastodon", "threads.", "bsky.", "pinterest.", "tumblr.", "snapchat.",
+                "whatsapp.", "telegram.", "signal.", "vk.com", "archiveofourown.", "deviantart.")),
+    ("shopping", ("amazon.", "ebay.", "aliexpress.", "temu.", "etsy.", "skroutz.", "public.gr", "plaisio.",
+                  "kotsovolos.", "e-shop.gr", "willhaben.", "zalando.", "ikea.", "shein.", "otto.",
+                  "mediamarkt.", "geizhals.", "wish.com")),
+    ("finance", ("paypal.", "revolut.", "wise.com", "n26.", "bank", "eurobank.", "piraeus", "alpha.gr",
+                 "nbg.gr", "erste", "raiffeisen", "bawag", "klarna.", "stripe.", "visa.", "mastercard.",
+                 "sparkasse", "george.")),
+    ("gov", ("gov.", "gsis.gr", "efka.gr", "gv.at", "finanzonline", "id-austria", "europa.eu")),
+    ("games", ("steam", "gog.com", "epicgames.", "ea.com", "ubisoft.", "battle.net", "blizzard.",
+               "cdprojekt", "nexusmods.", "xbox.", "playstation.", "nintendo.", "itch.io", "rockstargames.",
+               "riotgames.", "mod.io", "humblebundle.")),
+    ("media", ("netflix.", "spotify.", "disneyplus.", "primevideo.", "youtube.", "twitch.", "hbomax.",
+               "max.com", "deezer.", "tidal.", "crunchyroll.", "soundcloud.", "audible.", "plex.")),
+    ("crypto", ("binance.", "coinbase.", "kraken.", "bitpanda.", "metamask.", "ledger.", "trezor.",
+                "bybit.", "kucoin.", "crypto.com", "nicehash.", "2miners.", "f2pool.")),
+]
+
+# Columns of the CSV files browsers and password managers export: (our field, the names they use).
+CSV_FIELDS = [
+    ("title", ("name", "title")),
+    ("url", ("url", "login_uri", "website", "web site", "address", "uri", "hostname", "origin_url")),
+    ("user", ("username", "login_username", "user", "login", "email", "user name", "username_value")),
+    ("password", ("password", "login_password", "password_value", "pass")),
+    ("notes", ("note", "notes", "comment", "comments", "extra")),
+]
 
 
 def gpg_program():
@@ -94,6 +152,104 @@ def parse_entry(text):
             rest.append(line)
     entry["notes"] = "\n".join(rest).strip("\n")
     return entry
+
+
+def type_of(name):
+    """The type of an entry: its top folder, "" when that is not one of TYPES."""
+    top, sep, _ = name.partition("/")
+    return top if sep and top in TYPE_NAMES else ""
+
+
+def split_name(name):
+    """(type, the rest of the name)."""
+    kind = type_of(name)
+    return (kind, name[len(kind) + 1:]) if kind else ("", name)
+
+
+# --- importing CSV exports (Chromium, Firefox, Bitwarden, ...) ---------------
+
+def site_of(url):
+    """("amazon.de", "") from an address; Android apps in Chrome's export are ("<package>", "app")."""
+    url = url.strip()
+    if url.startswith("android://"):
+        return url.rsplit("@", 1)[-1].strip("/").lower(), "app"
+    try:
+        host = urllib.parse.urlsplit(url if "://" in url else "https://" + url).hostname or ""
+    except ValueError:
+        host = ""
+    return host.removeprefix("www."), ""
+
+
+def fits(site, mark):
+    if mark.endswith("."):
+        return site.startswith(mark) or "." + mark in site
+    if "." in mark:
+        return site == mark or site.endswith("." + mark)
+    return mark in site
+
+
+def guess_type(site):
+    for kind, marks in SITE_TYPES:
+        if any(fits(site, m) for m in marks):
+            return kind
+    return "web"
+
+
+def clean_part(text):
+    """A piece of an entry name, with only what NAME allows; never empty."""
+    text = re.sub(r"[^A-Za-z0-9._@ +-]+", "_", text.strip())
+    return re.sub(r"^[^A-Za-z0-9@]+", "", text).rstrip(" ") or "unnamed"
+
+
+def read_csv(path):
+    """The logins in a CSV export: [{"type", "name", "user", "url", "password", "notes", "exists"}];
+    ValueError when the file isn't one. name is <site>/<user> without the type; names don't
+    repeat, and exists is set where the store has <type>/<name> already."""
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f))
+    if not rows:
+        raise ValueError("The file is empty.")
+    head = [h.strip().lower() for h in rows[0]]
+    cols = {field: next((head.index(n) for n in names if n in head), None) for field, names in CSV_FIELDS}
+    if cols["password"] is None or (cols["url"] is None and cols["title"] is None):
+        raise ValueError("This doesn't look like a password export: it needs a password column and an "
+                         "address or name column (the first line names the columns).")
+    have = {n.lower() for n in entries()}
+    taken, found = set(), []
+    for row in rows[1:]:
+        def get(field):
+            i = cols[field]
+            return row[i] if i is not None and i < len(row) else ""
+        password = get("password")
+        if not password or "\n" in password:
+            continue
+        url, user = get("url").strip(), get("user").strip()
+        site, app = site_of(url) if url else ("", "")
+        site = site or get("title").strip().lower()
+        kind = guess_type(site)
+        if app and kind == "web":
+            kind = app
+        base = "/".join(clean_part(p) for p in [site] + ([user] if user else []))
+        name, n = base, 2
+        while f"{kind}/{name}".lower() in taken:
+            name, n = f"{base} {n}", n + 1
+        taken.add(f"{kind}/{name}".lower())
+        found.append({"type": kind, "name": name, "user": user, "url": url, "password": password,
+                      "notes": get("notes").strip(), "exists": f"{kind}/{name}".lower() in have})
+    return found
+
+
+def shred(path):
+    """Overwrite a file and remove it: (ok, what went wrong)."""
+    try:
+        p = subprocess.run(["shred", "-u", "-z", path], capture_output=True, text=True, timeout=60)
+        return p.returncode == 0, p.stderr.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        try:
+            os.remove(path)
+            return True, ""
+        except OSError:
+            return False, str(e)
 
 
 def generate(length=20):

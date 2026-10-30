@@ -84,7 +84,8 @@ complicated software platform.
 - **Tools**: the other things of the machine you start and stop (voice tools, a local web
   server, a browser profile, ...), one row each with Start, Stop, Open and buttons of your own.
 - **Passwords**: a small password manager on top of GnuPG: search, copy (the clipboard is
-  emptied again after 45 seconds), edit, generate, and sync between your machines through git.
+  emptied again after 45 seconds), edit, generate, entries sorted by type, an import of browser
+  exports, and sync between your machines through git.
 - **Documentation**: the user guide, with search, and your own notes file next to it.
 - **Settings**: everything that differs from machine to machine, with a Check button.
 
@@ -211,6 +212,18 @@ One file per entry in `~/.password-store/`, encrypted with GnuPG for the key nam
 `.gpg-id` there. It is the layout of the [`pass`](https://www.passwordstore.org/) program, so
 the files can be read without AIcove (`pass show NAME`, or `gpg -d NAME.gpg`). In a file:
 line 1 the password, then optional `user: ...` and `url: ...`, then free notes.
+
+The top folder of an entry is its type: `web`, `mail`, `social`, `shopping`, `finance`, `gov`,
+`games`, `media`, `app`, `wifi`, `pc`, `server`, `db`, `vpn`, `crypto` or `other`
+(`web/example.com/me@example.com`). The list is grouped by type (click a heading to fold it),
+the menu above it shows one type only, and the form has a type menu in front of the name.
+Entries outside these folders are listed under "(no type)"; pick a type and save to move one.
+
+**More → Import CSV** reads the export of Chromium, Chrome, Firefox, Bitwarden and most other
+password managers (Chromium: Settings → Passwords → Export). It lists the logins without their
+passwords and gives each a type from its site; untick, retype or rename what doesn't fit, then
+everything is encrypted and committed at once. Afterwards it offers to shred the CSV file,
+which holds every password in plain text.
 
 AIcove does no encryption of its own and never sees the master password: GnuPG asks for it in
 its own window and remembers it for a while (**Lock** makes it forget). A password only ever
