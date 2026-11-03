@@ -152,6 +152,14 @@ picture takes a while. Pictures are kept in the persona's `chats/pictures/`; del
 or the message deletes them. The `pictures` setting names the tool, or the address of an image
 server running elsewhere (anything with the OpenAI image API). Needs a model that can use tools.
 
+**Its own face.** A persona can look the same in every picture it is in. Train a LoRA on the
+Z-Image model with pictures of its face, put the `.safetensors` file in the LoRA folder
+(`~/AIcove/loras/`, Settings tab), and on the Personas tab pick it under **LoRA** with the word
+it was trained on (the trigger word). When the persona is in the picture itself, it describes
+itself as its instructions say and the picture is made with its LoRA; pictures without it stay as
+they were. The image tool must be named `pictures` and have `--lora-model-dir "$AICOVE_LORAS"`
+on its start line. The LoRA folder is inside the AIcove folder, so it moves and syncs with it.
+
 ## Agents
 
 Personas are for talking and writing; agents are for jobs. An agent has a name, a picture and a

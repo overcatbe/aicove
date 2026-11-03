@@ -96,6 +96,8 @@ class Persona:
         self.files = files
         # Its voice: a profile of the voice server (cove/voice.py), "" = none.
         self.voice = ""
+        # Its face in pictures: "<LoRA file> <trigger word>" (cove/pictures.py), "" = none.
+        self.lora = ""
 
     @property
     def launcher(self):
@@ -142,6 +144,8 @@ class Persona:
                 p.files = value
             elif key == "voice" and re.fullmatch(r"[\w.-]+", value):
                 p.voice = value
+            elif key == "lora" and re.fullmatch(r"[\w.-]+ [\w-]+", value):
+                p.lora = value
             else:
                 break
             rest = after
@@ -153,7 +157,8 @@ class Persona:
         head = (f"models: {', '.join(self.models)}\n" if self.models else "") \
             + "".join(f"{k}: {self.samplers[k]}\n" for k in SAMPLERS if k in self.samplers) \
             + (f"files: {self.files}\n" if self.files else "") \
-            + (f"voice: {self.voice}\n" if self.voice else "")
+            + (f"voice: {self.voice}\n" if self.voice else "") \
+            + (f"lora: {self.lora}\n" if self.lora else "")
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(f"name: {self.name}\n{head}\n{self.system}\n")
 

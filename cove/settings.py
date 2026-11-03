@@ -43,6 +43,8 @@ SETTINGS = [
                        "# the voice configurator, started when needed; or the address of one, e.g. \"http://127.0.0.1:7871\"."),
     ("pictures", "pictures", "What makes pictures in chats with Pictures on: the tool (Tools tab) that is the\n"
                              "# image server (sd-server), started when needed; or the address of one."),
+    ("loras_dir", "~/AIcove/loras", "Folder with the LoRA files (.safetensors) personas can be given a face from. The image\n"
+                                    "# tool gets it as $AICOVE_LORAS: --lora-model-dir \"$AICOVE_LORAS\" on its start line."),
     ("terminal", "", "Terminal window for tools that ask something (sudo, yes/no): the command that\n"
                      "# takes the program to run after it, e.g. \"xfce4-terminal -x\" or \"konsole -e\"."),
     ("keyboard", [], "Keyboard buttons in the top bar, each \"Label | command\", e.g.\n"
@@ -326,3 +328,7 @@ S.load()
 # next start.
 COVE_DIR = os.path.expanduser(env("FOLDER") or S.cove_folder.strip() or DEFAULTS["cove_folder"])
 PERSONA_DIR = os.path.join(COVE_DIR, "personas")
+
+
+def loras_folder():
+    return os.path.expanduser(S.loras_dir.strip() or DEFAULTS["loras_dir"])

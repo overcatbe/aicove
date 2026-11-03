@@ -3,7 +3,9 @@
 # sd-server (or anything with the OpenAI image API: POST /v1/images/generations). Setting
 # "pictures": the tool (Tools tab) that is the server, started when needed; or the address of one
 # running elsewhere. Pictures are kept in the persona's chats/pictures/ and shown in the chat; a
-# picture no message needs any more (chat or message deleted) is deleted.
+# picture no message needs any more (chat or message deleted) is deleted. A persona with a "lora:" line
+# has its own face: when it is in the picture itself (me), the Pictures tool, whose sd-server has
+# --lora-model-dir "$AICOVE_LORAS" (setting loras_dir), renders with that LoRA and its trigger word.
 
 import base64
 import json
@@ -13,10 +15,11 @@ import urllib.error
 import urllib.request
 
 from . import personas, tools
-from .settings import S
+from .settings import S, loras_folder
 
 FOLDER = "pictures"   # in the persona's chats/
 SHAPES = {"square": "1024x1024", "portrait": "832x1216", "landscape": "1216x832"}
+LORA_TOOL = "pictures"   # the tool whose server knows the LoRAs
 HINT = ("You can make pictures with make_picture. Use it when the user asks for a picture, or when "
         "showing something says more than words. The user sees the picture in the chat by itself: don't "
         "put the picture or a link to it in your answer, and don't describe it again at length.\n"
@@ -26,6 +29,8 @@ HINT = ("You can make pictures with make_picture. Use it when the user asks for 
         "- 150 to 250 words of English, one flowing paragraph.\n"
         "- Everything the user asked for, as they said it: their objects stay their objects (hard disks "
         "stay hard disks), their number of people stays exact. Add nothing that goes against it.\n"
+        "- If you are in the picture yourself and your instructions say how you look, copy that description "
+        "word for word, in the third person, then add your expression, pose and angle, and set me to true.\n"
         "- Style: a photo unless the user asks for something else.\n"
         "- The camera: where it stands, how wide, which lens.\n"
         "- Depth in layers: what is in the foreground, the middle and the background.\n"
@@ -43,7 +48,8 @@ TOOLS = [{"type": "function", "function": {
         "description": {"type": "string", "description":
                         "The full prompt for the image model, 150-250 words of English, written as the "
                         "instructions about pictures say."},
-        "shape": {"type": "string", "enum": list(SHAPES), "description": "square (default), portrait or landscape."}},
+        "shape": {"type": "string", "enum": list(SHAPES), "description": "square (default), portrait or landscape."},
+        "me": {"type": "boolean", "description": "True when you yourself are in the picture."}},
         "required": ["description"]}}}]
 NAMES = {"make_picture"}
 
@@ -76,27 +82,50 @@ def folder(pid):
     return os.path.join(personas.folder(pid), "chats", FOLDER)
 
 
-def make(pid, description, shape="square", say=print):
+def loras():
+    """The LoRA files personas can choose from."""
+    try:
+        return sorted(f for f in os.listdir(loras_folder()) if f.endswith(".safetensors"))
+    except OSError:
+        return []
+
+
+def request_for(description, shape, lora):
+    """The image server's request: with a LoRA its own API, which is the one that takes them."""
+    size = SHAPES.get(shape, SHAPES["square"])
+    if lora:
+        name, trigger = lora.split()
+        width, height = size.split("x")
+        url, body = "/sdapi/v1/txt2img", {"prompt": f"{trigger}, {description}", "width": int(width),
+                                          "height": int(height), "steps": 8, "cfg_scale": 1.0, "seed": -1,
+                                          "lora": [{"path": name, "multiplier": 1.0}]}
+    else:
+        url, body = "/v1/images/generations", {"prompt": description, "n": 1, "size": size, "output_format": "jpeg",
+                                               "output_compression": 90}
+    return urllib.request.Request(address() + url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+
+
+def make(pid, description, shape="square", say=print, lora=""):
     """Make a picture; returns its file name in the persona's pictures folder. Raises OSError."""
     ready(say)
-    body = {"prompt": description, "n": 1, "size": SHAPES.get(shape, SHAPES["square"]), "output_format": "jpeg",
-            "output_compression": 90}
-    req = urllib.request.Request(address() + "/v1/images/generations", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"})
+    t = tool()
+    lora = lora if t is not None and t.name == LORA_TOOL else ""
+    req = request_for(description, shape, lora)
     try:
         with urllib.request.urlopen(req, timeout=1800) as r:
             data = json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise OSError(f"image server: {e.read()[:300].decode('utf-8', 'replace') or e}") from None
     try:
-        image = base64.b64decode(data["data"][0]["b64_json"])
+        image = base64.b64decode(data["images"][0] if lora else data["data"][0]["b64_json"])
     except (KeyError, IndexError, TypeError, ValueError):
         raise OSError("the image server sent no picture") from None
     os.makedirs(folder(pid), exist_ok=True)
-    name = time.strftime("%Y%m%d-%H%M%S") + ".jpg"
+    ext = ".png" if lora else ".jpg"
+    name = time.strftime("%Y%m%d-%H%M%S") + ext
     n = 2
     while os.path.exists(os.path.join(folder(pid), name)):
-        name, n = time.strftime("%Y%m%d-%H%M%S") + f"-{n}.jpg", n + 1
+        name, n = time.strftime("%Y%m%d-%H%M%S") + f"-{n}{ext}", n + 1
     with open(os.path.join(folder(pid), name), "wb") as f:
         f.write(image)
     return name
@@ -112,7 +141,8 @@ def run(name, arguments, persona):
     if not description:
         return "Give a description of the picture.", {}
     try:
-        made = make(persona.id, description, str(a.get("shape") or "square"), say=lambda t: None)
+        made = make(persona.id, description, str(a.get("shape") or "square"), say=lambda t: None,
+                    lora=persona.lora if a.get("me") else "")
     except OSError as e:
         return f"No picture: {e}", {}
     return "The picture is made and the user sees it now.", {"picture": made}

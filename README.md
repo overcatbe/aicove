@@ -192,6 +192,13 @@ Launchers belong to one machine, because the model files differ. Everything in `
 yours and moves by copying the folder. A persona names its launchers (`models: a, b` in its
 `persona.txt`); on a machine without them, pick others on the Personas tab.
 
+A persona can have its own face in pictures. Train a LoRA on the Z-Image model, put the
+`.safetensors` file in the LoRA folder (`~/AIcove/loras/`, a setting), and pick it on the Personas
+tab with its trigger word. It is one file per persona, and any persona can use any file. When the
+persona is in the picture itself, the Pictures tool renders with that LoRA, so the tool must be
+named `pictures` and have `--lora-model-dir "$AICOVE_LORAS"` on its start line. The folder is
+synced with the AIcove folder like the personas.
+
 A tool file (Tools tab, "Add tool…" writes the same):
 
     name: Voice configurator

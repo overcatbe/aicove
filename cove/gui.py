@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import fetch, gui_state, personas, profiles, server, settings, sync, tools, voice
+from . import fetch, gui_state, personas, pictures, profiles, server, settings, sync, tools, voice
 from . import launchers as launcher_files
 from .gui_chat import FACE_SIZE, ChatTab, face, square_png
 from .gui_agents import AgentsTab
@@ -2542,8 +2542,22 @@ class Window(QMainWindow):
         voice_row.addWidget(self.p_voices_btn)
         grid.addWidget(QLabel("Voice"), 8, 0)
         grid.addLayout(voice_row, 8, 1)
-        grid.addWidget(note, 9, 1)
-        grid.addLayout(rbuttons, 10, 1)
+        self.p_lora = Combo()
+        self.p_lora.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.p_lora.setToolTip("Its own face, for pictures it is in: a LoRA file from the LoRA folder (Settings tab). "
+                               "Put a new file there and it is listed the next time this persona is opened.")
+        self.p_lora.currentIndexChanged.connect(self.persona_changed)
+        self.p_trigger = QLineEdit()
+        self.p_trigger.setPlaceholderText("trigger word")
+        self.p_trigger.setToolTip("The word the LoRA was trained on. It goes in front of every picture of this persona.")
+        self.p_trigger.textChanged.connect(self.persona_changed)
+        lora_row = QHBoxLayout()
+        lora_row.addWidget(self.p_lora, 1)
+        lora_row.addWidget(self.p_trigger)
+        grid.addWidget(QLabel("LoRA"), 9, 0)
+        grid.addLayout(lora_row, 9, 1)
+        grid.addWidget(note, 10, 1)
+        grid.addLayout(rbuttons, 11, 1)
 
         split = QSplitter()
         split.addWidget(left)
@@ -2605,13 +2619,14 @@ class Window(QMainWindow):
         self.p_others = tuple(persona.models[1:]) if persona else ()
         self.load_profiles(persona)
         self.fill_voices(persona.voice if persona else "")
+        self.fill_loras(persona.lora if persona else "")
         self.persona = persona
         # To notice at Save that the file was changed behind the form (a sync, an editor).
         self.p_seen = self.persona_stamp()
         self.p_picture = None
         self.p_baseline = self.persona_state()
         for w in (self.p_name, self.p_system, self.p_delete_btn, self.p_pick_btn, self.p_launcher, self.p_files,
-                  self.p_voice, self.p_voices_btn):
+                  self.p_voice, self.p_voices_btn, self.p_lora, self.p_trigger):
             w.setEnabled(persona is not None)
         self.persona_changed()
 
@@ -2638,7 +2653,7 @@ class Window(QMainWindow):
         return (self.p_name.text().strip(), self.p_system.toPlainText().strip(),
                 self.samplers_state(), self.p_picture,
                 self.p_launcher.currentData() or "", self.p_files.currentData() or "", self.p_others,
-                self.p_voice.currentData() or "")
+                self.p_voice.currentData() or "", self.p_lora.currentData() or "", self.p_trigger.text().strip())
 
     # --- a persona's own model ---------------------------------------------------
 
@@ -3030,6 +3045,23 @@ class Window(QMainWindow):
         self.p_voice.setCurrentIndex(max(self.p_voice.findData(wanted), 0))
         self.p_voice.blockSignals(False)
 
+    def fill_loras(self, wanted):
+        """The LoRA menu: none, the files in the LoRA folder, and the persona's own even if not there."""
+        name, _, trigger = wanted.partition(" ")
+        self.p_lora.blockSignals(True)
+        self.p_lora.clear()
+        self.p_lora.addItem("— none —", "")
+        found = pictures.loras()
+        for f in found:
+            self.p_lora.addItem(f, f)
+        if name and name not in found:
+            self.p_lora.addItem(f"{name}  (not in the LoRA folder)", name)
+        self.p_lora.setCurrentIndex(max(self.p_lora.findData(name), 0))
+        self.p_lora.blockSignals(False)
+        self.p_trigger.blockSignals(True)
+        self.p_trigger.setText(trigger)
+        self.p_trigger.blockSignals(False)
+
     def fetch_voices(self):
         self.p_voices_btn.setEnabled(False)
         self.p_voices_btn.setText("Asking…")
@@ -3088,9 +3120,12 @@ class Window(QMainWindow):
     def save_persona(self):
         if self.persona is None:
             return False
-        name, system, samplers, picture, launcher, files, others, voice_ = self.persona_state()
+        name, system, samplers, picture, launcher, files, others, voice_, lora, trigger = self.persona_state()
         if not name:
             QMessageBox.warning(self, "Can't save", "Name is empty.")
+            return False
+        if lora and not re.fullmatch(r"[\w-]+", trigger):
+            QMessageBox.warning(self, "Can't save", "A LoRA needs its trigger word: one word, no spaces.")
             return False
         if self.persona_stamp() != self.p_seen and QMessageBox.question(
                 self, "Changed in the meantime",
@@ -3104,6 +3139,7 @@ class Window(QMainWindow):
         self.persona.models = [launcher] + [o for o in others if o != launcher] if launcher else []
         self.persona.files = files
         self.persona.voice = voice_
+        self.persona.lora = f"{lora} {trigger}" if lora else ""
         self.persona.samplers = dict(samplers[0])
         try:
             self.persona.write()
@@ -3524,6 +3560,10 @@ class Window(QMainWindow):
         row(grid, "pictures", "Pictures",
             "What makes pictures in chats with Pictures on: the name of the tool (Tools tab) that is the "
             "image server (sd-server), started when needed; or the address of one running elsewhere.", QLineEdit())
+        row(grid, "loras_dir", "LoRA folder",
+            "The LoRA files (.safetensors) personas can get a face from (LoRA on the Personas tab). The image "
+            "tool's start line needs --lora-model-dir \"$AICOVE_LORAS\"; a change counts from its next start.",
+            QLineEdit(), "folder")
         row(grid, "voice", "Voice",
             "What reads answers aloud for personas with a voice: the name of the tool (Tools tab) that is "
             "the voice configurator, started when needed; or the address of one running elsewhere.", QLineEdit())

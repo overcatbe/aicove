@@ -16,6 +16,14 @@
   contrast, and the important things in the middle of the frame (pictures often get cropped at
   the top and bottom). What you asked for stays as you said it, and there is no text in the
   picture unless you ask for it. Same image model, much better pictures.
+- **A persona's own face.** Give it a LoRA trained on the Z-Image model (Personas tab, **LoRA**,
+  with its trigger word; the files go in the LoRA folder, `~/AIcove/loras/`). When the persona is
+  in the picture itself, it describes itself as its instructions say and the picture is made with
+  its LoRA, so it looks like itself every time. The image tool needs
+  `--lora-model-dir "$AICOVE_LORAS"` on its start line.
+
+**Sync**
+- Fetch and push may take up to 15 minutes, for big LoRA files in the AIcove folder.
 
 **Chats**
 - **Delete** removes a chat for good, with its audio and pictures (no trash any more).

@@ -29,7 +29,7 @@ import time
 import urllib.parse
 
 from .launchers import NAME
-from .settings import BACKUP_DIR, CONFIG_DIR, S, STATE_DIR, port_open
+from .settings import BACKUP_DIR, CONFIG_DIR, S, STATE_DIR, loras_folder, port_open
 
 TOOL_DIR = os.path.join(CONFIG_DIR, "tools")
 RUN_DIR = os.path.join(STATE_DIR, "tools")
@@ -271,15 +271,16 @@ def start(tool, say=print):
         # A model of another machine takes no memory here.
         if server.llama_pid() is not None and not server.remote_host():
             server.llama_stop(say)
+    env = {**os.environ, "AICOVE_LORAS": loras_folder()}
     if not tool.kept():
-        return subprocess.call(["sh", "-c", tool.start], stdin=keyboard(), cwd=tool.cwd())
+        return subprocess.call(["sh", "-c", tool.start], stdin=keyboard(), cwd=tool.cwd(), env=env)
     if tool.state() != "stopped":
         say(f"{tool.title} is already running" + (f": {tool.address}" if tool.address else "."))
         return 0
     os.makedirs(RUN_DIR, exist_ok=True)
     with open(tool.logfile(), "w") as log:
         proc = subprocess.Popen(["sh", "-c", tool.start], stdin=subprocess.DEVNULL, stdout=log,
-                                stderr=subprocess.STDOUT, start_new_session=True, cwd=tool.cwd())
+                                stderr=subprocess.STDOUT, start_new_session=True, cwd=tool.cwd(), env=env)
     with open(tool.pidfile(), "w") as f:
         f.write(str(proc.pid))
     say(f"Starting {tool.title} (pid {proc.pid}) — log: {tool.logfile()}")

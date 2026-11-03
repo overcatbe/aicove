@@ -83,7 +83,7 @@ def sync_repo(path, commit):
     code, branch = git(path, "symbolic-ref", "-q", "--short", "HEAD")
     if code != 0 or not branch:
         return [f"{name}: not on a branch, left alone."], []
-    code, out = git(path, "fetch", "-q", "origin", timeout=120)
+    code, out = git(path, "fetch", "-q", "origin", timeout=900)
     if code != 0:
         return [f"{name}: can't reach {git(path, 'remote', 'get-url', 'origin')[1]}: {out.splitlines()[-1] if out else ''}"], []
     upstream = f"origin/{branch}"
@@ -115,7 +115,7 @@ def sync_repo(path, commit):
     ahead = count(path, f"{upstream}..HEAD") if git(path, "rev-parse", "-q", "--verify", upstream)[0] == 0 \
         else count(path, "HEAD")
     if ahead:
-        code, out = git(path, "push", "-q", "origin", f"HEAD:{branch}", timeout=120)
+        code, out = git(path, "push", "-q", "origin", f"HEAD:{branch}", timeout=900)
         lines.append(f"{name}: sent {ahead} change{'s' if ahead != 1 else ''}." if code == 0
                      else f"{name}: can't send: {out.splitlines()[-1] if out else ''}")
     return lines, [os.path.join(path, f) for f in changed]
