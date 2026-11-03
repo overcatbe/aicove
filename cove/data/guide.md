@@ -57,6 +57,9 @@ chats of the one you picked; on the right the chat.
   (thinking counts too). Handy for comparing models and launcher settings.
 - **▸ Thinking** opens what a thinking model considered before answering. It is kept with the
   answer but never sent back to the model.
+- While an answer comes in you can scroll up and read; the chat follows the answer only while
+  you are at the end. If it finishes while you are further up, the persona's picture shows a
+  **↓**: click it to go to the start of the answer.
 
 Every chat is a file in the persona's folder, `~/AIcove/personas/<persona>/chats/`. **Delete**
 removes a chat for good. **Rename…** changes a chat's title; new chats are

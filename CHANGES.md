@@ -19,6 +19,11 @@
 
 **Chats**
 - **Delete** removes a chat for good, with its audio and pictures (no trash any more).
+- **No more blinking** while an answer comes in: only the answer is redrawn, not the whole chat,
+  and you can scroll up and read while it writes; it follows the answer only while you are at
+  the end.
+- If an answer finishes while you are reading further up, nothing jumps: the persona's picture
+  shows a **↓**, and a click on it goes to the start of the answer.
 
 **Writing**
 - The persona's picture is next to its name in the talk panel, with the ring that pulses while

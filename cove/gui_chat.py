@@ -11,7 +11,7 @@ import time
 
 import markdown
 from PyQt6.QtCore import QBuffer, QIODevice, QSize, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QCursor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
+from PyQt6.QtGui import QDesktopServices, QFontDatabase, QColor, QCursor, QFont, QIcon, QLinearGradient, QImage, QImageReader, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
@@ -157,12 +157,15 @@ def to_html(text, dark):
 class Face(QWidget):
     """The persona's picture at the top right, with a ring that pulses while the model works:
     orange while it thinks or uses tools, the accent colour while it writes, slow grey while a
-    model loads. state() says which ("thinking", "writing", "loading" or None)."""
+    model loads. state() says which ("thinking", "writing", "loading" or None). With a badge
+    (set_badge), a ↓ in its corner says an answer is ready further down; a click on it: clicked."""
     RING = 5
+    clicked = pyqtSignal()
 
     def __init__(self, state, parent=None, size=CHAT_FACE_SIZE):
         super().__init__(parent)
         self.state = state
+        self.badge = False
         self.pixmap = None
         self.now = None
         self.phase = 0.0
@@ -174,6 +177,32 @@ class Face(QWidget):
     def setPixmap(self, pixmap):
         self.pixmap = pixmap
         self.update()
+
+    def set_badge(self, on):
+        if on == self.badge:
+            return
+        self.badge = on
+        self.setCursor(Qt.CursorShape.PointingHandCursor if on else Qt.CursorShape.ArrowCursor)
+        self.setToolTip("The answer is ready further down: click to go to it" if on else "")
+        self.update()
+
+    def mousePressEvent(self, event):
+        if self.badge and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        else:
+            super().mousePressEvent(event)
+
+    def paint_badge(self, painter):
+        side = round(self.width() * 0.38)
+        spot = self.rect().adjusted(self.width() - side, self.height() - side, 0, 0).toRectF().adjusted(1, 1, -1, -1)
+        painter.setPen(QColor(255, 255, 255))
+        painter.setBrush(self.palette().highlight().color())
+        painter.drawEllipse(spot)
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(round(side * 0.62))
+        painter.setFont(font)
+        painter.drawText(spot, Qt.AlignmentFlag.AlignCenter, "↓")
 
     def show_persona(self, persona):
         """The persona's picture (or the placeholder), sized for the ring; None: no picture."""
@@ -203,6 +232,8 @@ class Face(QWidget):
         if self.pixmap is not None:
             painter.drawPixmap(inner, self.pixmap)
         if self.now is None:
+            if self.badge:
+                self.paint_badge(painter)
             return
         colour = QColor({"thinking": "#e08a1e", "loading": "#8a8a8a"}.get(
             self.now, self.palette().highlight().color().name()))
@@ -502,6 +533,8 @@ class ChatTab(QWidget):
         self.live = None             # {"thinking", "text"} of the answer coming in
         self.live_thinking = False   # the thinking of the answer coming in is shown (stays so for the next)
         self.dirty = False
+        self.live_from = None        # where the answer coming in starts in the view's document
+        self.head_stale = False      # the messages above the answer coming in changed
         self.problem = None          # why the last answer didn't come, shown under the chat
 
         self.people = QListWidget()
@@ -587,6 +620,10 @@ class ChatTab(QWidget):
         self.view = QTextBrowser()
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self.on_link)
+        # An answer that finished while you were reading further up: a ↓ on the face takes you to it.
+        self.badge_chat = None
+        self.face.clicked.connect(self.go_to_answer)
+        self.view.verticalScrollBar().valueChanged.connect(self.maybe_drop_badge)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self.view_menu)
         self.input = QPlainTextEdit()
@@ -1206,6 +1243,7 @@ class ChatTab(QWidget):
         self.answer()
 
     def answer(self):
+        self.face.set_badge(False)
         self.chat.new_version()
         self.live = {"thinking": "", "text": ""}
         self.worker = Reply(self.persona, self.chat)
@@ -1222,8 +1260,10 @@ class ChatTab(QWidget):
         if kind == "round":
             # The tools have run; their results are in the chat now, the next part of the answer starts.
             self.live = {"thinking": "", "text": ""}
+            self.head_stale = True
         elif kind == "tool":
             self.live = {"thinking": "", "text": "", "tool": text}
+            self.head_stale = True
         elif kind == "status":
             self.live["status"] = text
         elif kind == "note":
@@ -1279,8 +1319,23 @@ class ChatTab(QWidget):
         self.send_btn.show()
         self.fill_chats(self.chat.id)
         self.paint()
+        bar = self.view.verticalScrollBar()
+        if bar.value() < bar.maximum() - 40:
+            # You are reading something further up: nothing moves, the face shows a ↓.
+            self.badge_chat = self.chat
+            self.face.set_badge(True)
         self.input.setFocus()
         self.measure()
+
+    def go_to_answer(self):
+        """To the start of the last answer (from the ↓ on the face)."""
+        self.face.set_badge(False)
+        if self.chat is self.badge_chat:
+            self.view.scrollToAnchor("answer")
+
+    def maybe_drop_badge(self, value):
+        if self.face.badge and value >= self.view.verticalScrollBar().maximum() - 40:
+            self.face.set_badge(False)
 
     def on_link(self, url):
         what, _, number = url.toString().partition(":")[2].partition("/")
@@ -1607,15 +1662,39 @@ class ChatTab(QWidget):
 
     def paint_if_dirty(self):
         if self.dirty:
-            self.paint()
+            self.paint(only_live=not self.head_stale)
 
-    def paint(self):
+    def paint(self, only_live=False):
+        """Show the chat. While an answer comes in, only that answer is swapped (only_live): the
+        messages above stay as they are, so the view doesn't blink or jump, and it follows the
+        answer only when you are at the end. Drawing waits until the new frame is complete."""
         self.dirty = False
         bar = self.view.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 40
         keep = bar.value()
-        self.view.setHtml(self.page())
-        bar.setValue(bar.maximum() if at_end or self.worker else keep)
+        self.view.setUpdatesEnabled(False)
+        try:
+            if only_live and self.live_from is not None and self.live is not None:
+                cursor = QTextCursor(self.view.document())
+                cursor.setPosition(self.live_from)
+                cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+                cursor.insertHtml(self.live_html())
+                bar.setValue(bar.maximum() if at_end else keep)
+            else:
+                if self.face.badge and self.chat is not self.badge_chat:
+                    self.face.set_badge(False)   # another chat is shown now
+                head, live = self.page()
+                self.view.setHtml(head)
+                self.live_from = None
+                self.head_stale = False
+                if live:
+                    cursor = QTextCursor(self.view.document())
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    self.live_from = cursor.position()
+                    cursor.insertHtml(live)
+                bar.setValue(bar.maximum() if at_end or self.worker else keep)
+        finally:
+            self.view.setUpdatesEnabled(True)
 
     @staticmethod
     def buttons(links, dim, ground):
@@ -1633,19 +1712,25 @@ class ChatTab(QWidget):
                 cells.append(f"<td valign='middle' style='color:{dim}; font-size:small'>{link}</td>")
         return f"<table cellspacing='4' cellpadding='3' style='margin-top:2px'><tr>{''.join(cells)}</tr></table>"
 
-    def page(self):
+    def colours(self):
         pal = self.palette()
         dark = pal.window().color().lightness() < 128
         dim = pal.placeholderText().color().name()
         mine = pal.alternateBase().color().name()
         # Buttons under messages: a step lighter (dark theme) or darker than the page.
         button = pal.base().color().lighter(190).name() if dark else pal.base().color().darker(112).name()
+        return dark, dim, mine, button
+
+    def page(self):
+        """The chat as HTML: (everything above the answer coming in, that answer)."""
+        dark, dim, mine, button = self.colours()
         if self.persona is None:
-            return f"<p style='color:{dim}'>No personas yet — make one on the Personas tab.</p>"
+            return f"<p style='color:{dim}'>No personas yet — make one on the Personas tab.</p>", ""
         messages = self.chat.messages if self.chat else []
         if not messages and not self.live:
-            return f"<p style='color:{dim}'>A new chat with {html.escape(self.persona.name)}.</p>"
+            return f"<p style='color:{dim}'>A new chat with {html.escape(self.persona.name)}.</p>", ""
         last = len(messages) - 1
+        answer_at = self.turn_start(last) if messages and messages[-1]["role"] != "user" else None
         parts = []
         name = f"<b>{html.escape(self.persona.name)}</b>"
         covered, so_far = summary.current(self.chat) if self.chat else (0, "")
@@ -1746,31 +1831,40 @@ class ChatTab(QWidget):
                     links.append(f"<a href='cove:keep/{i}'>★ keep</a>")
                 if m.get("stats"):
                     links.append(f"{m['stats']['tokens']:,} tokens · {m['stats']['speed']} t/s")
-            head = f"<p style='margin:0'>{name}{model}</p>" if first else ""
+            # The start of the last answer is where the ↓ on the face goes.
+            mark = "<a name='answer'></a>" if i == answer_at else ""
+            head = f"<p style='margin:0'>{mark}{name}{model}</p>" if first else ""
             links = self.buttons(links, dim, button)
             parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}{links}</td></tr></table>")
-        if self.live is not None:
-            body = ""
-            if self.live.get("status"):
-                body += f"<p style='color:{dim}'><i>{html.escape(self.live['status'])}</i></p>"
-            if self.live.get("tool"):
-                body += f"<p style='color:{dim}'><i>{html.escape(self.live['tool'])} …</i></p>"
-            if self.live["thinking"]:
-                words = len(self.live["thinking"].split())
-                busy = "Thinking… " if not self.live["text"] else "Thinking "
-                body += (f"<p style='margin-top:4px'><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
-                         f"{busy}({words} words)</a></p>")
-                if self.live_thinking:
-                    body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
-                             f"<tr><td style='white-space:pre-wrap'>{html.escape(self.live['thinking'].strip())}"
-                             f"</td></tr></table><br>")
-            body += to_html(self.live["text"], dark) if self.live["text"] else ""
-            if not body:
-                body = f"<p style='color:{dim}'><i>…</i></p>"
-            first = not messages or messages[-1]["role"] == "user"
-            head = f"<p style='margin:0'>{name}</p>" if first else ""
-            parts.append(f"<table width='100%' cellpadding='8'><tr><td>{head}{body}</td></tr></table>")
         if self.problem and self.live is None:
             parts.append(f"<table width='100%' cellpadding='8' style='background:{mine}'><tr><td>"
                          f"<b>No answer.</b> {html.escape(self.problem)}</td></tr></table>")
-        return "".join(parts)
+        return "".join(parts), self.live_html()
+
+    def live_html(self):
+        """The answer coming in, kept apart from the rest so that paint() can swap just this."""
+        if self.live is None or self.persona is None:
+            return ""
+        dark, dim, mine, _ = self.colours()
+        messages = self.chat.messages if self.chat else []
+        name = f"<b>{html.escape(self.persona.name)}</b>"
+        body = ""
+        if self.live.get("status"):
+            body += f"<p style='color:{dim}'><i>{html.escape(self.live['status'])}</i></p>"
+        if self.live.get("tool"):
+            body += f"<p style='color:{dim}'><i>{html.escape(self.live['tool'])} …</i></p>"
+        if self.live["thinking"]:
+            words = len(self.live["thinking"].split())
+            busy = "Thinking… " if not self.live["text"] else "Thinking "
+            body += (f"<p style='margin-top:4px'><a href='cove:think/live' style='color:{dim}'>{'▾' if self.live_thinking else '▸'} "
+                     f"{busy}({words} words)</a></p>")
+            if self.live_thinking:
+                body += (f"<table width='100%' cellpadding='6' style='background:{mine}; font-size:small'>"
+                         f"<tr><td style='white-space:pre-wrap'>{html.escape(self.live['thinking'].strip())}"
+                         f"</td></tr></table><br>")
+        body += to_html(self.live["text"], dark) if self.live["text"] else ""
+        if not body:
+            body = f"<p style='color:{dim}'><i>…</i></p>"
+        first = not messages or messages[-1]["role"] == "user"
+        head = f"<p style='margin:0'>{name}</p>" if first else ""
+        return f"<table width='100%' cellpadding='8'><tr><td>{head}{body}</td></tr></table>"
