@@ -7,6 +7,10 @@ you chat with, your other tools, and your passwords.
 
 To chat: the **Chat** tab. Pick a persona, write, press Enter. If its model isn't loaded,
 AIcove loads it first. See the topic *Chat*. When you are done: **Stop everything** (top right).
+Or let AIcove do it: on the Settings tab, **Unload after** (Models) stops a model that sat unused
+that many minutes, and **Pictures idle** (Programs) does the same for the image server. Both
+load again by themselves when needed. A big model and the image server together can fill the
+memory of a whole machine, so these are worth setting there.
 
 The tabs: **Chat**, **Agents** (who works for you: news, research, your machines), **Personas**
 (who you talk and write with, and on which models), **Launchers** (a model file and how it

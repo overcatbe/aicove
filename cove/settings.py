@@ -45,6 +45,10 @@ SETTINGS = [
                              "# image server (sd-server), started when needed; or the address of one."),
     ("loras_dir", "~/AIcove/loras", "Folder with the LoRA files (.safetensors) personas can be given a face from. The image\n"
                                     "# tool gets it as $AICOVE_LORAS: --lora-model-dir \"$AICOVE_LORAS\" on its start line."),
+    ("model_idle", 0, "Minutes a model of this machine may sit unused before it is stopped to free its\n"
+                      "# memory (no answer, no Writing, no agent run in that time); 0 = never."),
+    ("pictures_idle", 0, "Minutes the image server (the Pictures tool) may sit without making a picture before\n"
+                         "# it is stopped to free its memory; it starts again for the next picture. 0 = never."),
     ("terminal", "", "Terminal window for tools that ask something (sudo, yes/no): the command that\n"
                      "# takes the program to run after it, e.g. \"xfce4-terminal -x\" or \"konsole -e\"."),
     ("keyboard", [], "Keyboard buttons in the top bar, each \"Label | command\", e.g.\n"

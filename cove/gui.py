@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import fetch, gui_state, personas, pictures, profiles, server, settings, sync, tools, voice
+from . import fetch, gui_state, idle, personas, pictures, profiles, server, settings, sync, tools, voice
 from . import launchers as launcher_files
 from .gui_chat import FACE_SIZE, ChatTab, face, square_png
 from .gui_agents import AgentsTab
@@ -1544,6 +1544,10 @@ class Window(QMainWindow):
         self.sync_timer = QTimer(self)
         self.sync_timer.timeout.connect(lambda: self.syncer.start(force=False))
         self.sync_timer.start(60000)
+        # Models and the image server that sit unused are stopped (settings model_idle, pictures_idle).
+        self.idle_timer = QTimer(self)
+        self.idle_timer.timeout.connect(self.stop_idle)
+        self.idle_timer.start(60000)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
@@ -2189,6 +2193,19 @@ class Window(QMainWindow):
 
     def busy(self):
         return self.proc.state() != QProcess.ProcessState.NotRunning
+
+    def stop_idle(self):
+        """Stop the model and the image server once they sit unused longer than their settings
+        allow; never while something here is starting, stopping or waiting for an answer."""
+        if self.busy() or self.chat_tab.worker is not None:
+            return
+        tool = idle.pictures_due()
+        if tool is not None:
+            self.say(f"--- {tool.title} made no picture for {S.pictures_idle} min: stopping it to free its memory ---")
+            self.tool_action(tool, "stop")
+        if idle.model_due():
+            self.say(f"--- the model was not used for {S.model_idle} min: stopping it to free its memory ---")
+            self.run_cove("stop")
 
     def save_and_start(self):
         if self.launcher is None or self.busy() or not self.save():
@@ -3551,6 +3568,14 @@ class Window(QMainWindow):
             box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             return box
 
+        def minutes():
+            box = IntBox()
+            box.setRange(0, 1440)
+            box.setSuffix(" min")
+            box.setSpecialValueText("never")
+            box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            return box
+
         grid = group("Programs")
         row(grid, "llama_server", "llama-server", "The program that runs the models (from llama.cpp).",
             QLineEdit(), "file")
@@ -3564,6 +3589,9 @@ class Window(QMainWindow):
             "The LoRA files (.safetensors) personas can get a face from (LoRA on the Personas tab). The image "
             "tool's start line needs --lora-model-dir \"$AICOVE_LORAS\"; a change counts from its next start.",
             QLineEdit(), "folder")
+        row(grid, "pictures_idle", "Pictures idle",
+            "Stop the image server after this many minutes without a picture, to free its memory; it "
+            "starts again for the next one. Never = it stays until you stop it.", minutes())
         row(grid, "voice", "Voice",
             "What reads answers aloud for personas with a voice: the name of the tool (Tools tab) that is "
             "the voice configurator, started when needed; or the address of one running elsewhere.", QLineEdit())
@@ -3572,6 +3600,10 @@ class Window(QMainWindow):
         row(grid, "models_dir", "Model folder",
             "Where the .gguf files are and where downloads go. Launchers name their file relative to it.",
             QLineEdit(), "folder")
+        row(grid, "model_idle", "Unload after",
+            "Stop a loaded model of this machine after this many minutes unused (no answer, no Writing, "
+            "no agent run), to free its memory; the next message loads it again. Never = it stays loaded.",
+            minutes())
         row(grid, "scan_dirs", "Also look in",
             "Other folders \"Add model\" lists model files from, separated by commas.", QLineEdit())
 

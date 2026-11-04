@@ -2,6 +2,12 @@
 
 ## Since v0.3
 
+**Memory**
+- A loaded model and the image server can stop by themselves when nobody uses them, so they
+  don't sit on your memory for days: Settings tab, **Unload after** (Models) and **Pictures
+  idle** (Programs), in minutes. Unused means no answer, no Writing and no agent run in that
+  time. Both load again when needed. Off ("never") until you set them.
+
 **Passwords**
 - Entries have a **type**, the top folder: web, mail, social, shopping, finance, gov, games,
   media, app, wifi, pc, server, db, vpn, crypto, other. The list is grouped by type with
