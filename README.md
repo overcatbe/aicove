@@ -204,8 +204,7 @@ at; Full HD is a separate shape. Each picture keeps its seed, so it can be made 
 detector on the Pictures tool's start line (`--ad-model face_yolov8n.safetensors`, a converted
 YOLOv8 face model), small faces in full-body and wide pictures are painted again at a bigger size
 and come out clean. The Documentation tab (*Chat → Pictures*) has the details, how to set up the
-detector, how to keep other people in a picture from getting the persona's face, and what we
-learned about training a face LoRA.
+detector and how to keep other people in a picture from getting the persona's face.
 
 A tool file (Tools tab, "Add tool…" writes the same):
 

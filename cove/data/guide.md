@@ -200,16 +200,6 @@ LoRA strength of about 0.8 a little more. What works: make the picture **without
 part of the picture again **with** the LoRA (an img2img pass with a soft mask over that side,
 strength about 0.6). The others stay who they are. AIcove does not do this by itself yet.
 
-**Training a face LoRA (what we learned).** Pictures from several angles, lights and
-expressions, at the image model's own size (about 1024 px). Captions describe pose, clothes, light,
-place and expression, never the face, hair or eyes: those belong to the trigger word. Writing a
-class word in every caption (*"trigger, a man, …"*) makes the LoRA learn that every man looks like
-this; avoid it, or train with differential output preservation or with pictures of other people
-without the trigger. Save a checkpoint every 100–250 steps and test several in real scenes with the
-same seeds, not only in the training samples: earlier checkpoints follow the prompt and move more
-freely, later ones get the face sharper but stiffer and pull harder on everyone else in the
-picture. Keep descriptions short, one pose and one action: every extra instruction for a hand can
-become an extra hand.
 
 ## Agents
 

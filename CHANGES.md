@@ -41,8 +41,8 @@
   Start the image server with a face detector (`--ad-model face_yolov8n.safetensors`) and every
   picture with a LoRA gets a second pass that paints each small face again at 512×512 and blends
   it back; close-ups are left alone. Without the detector nothing changes.
-- **Documentation:** setting up the face detector, keeping other people in a picture from getting
-  the persona's face, and what we learned training a face LoRA (Documentation tab, Chat).
+- **Documentation:** setting up the face detector and keeping other people in a picture from
+  getting the persona's face (Documentation tab, Chat).
 
 **Sync**
 - Fetch and push may take up to 15 minutes, for big LoRA files in the AIcove folder.
