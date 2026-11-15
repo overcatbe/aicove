@@ -2,6 +2,10 @@
 
 ## Since v0.3
 
+**Personas**
+- The example persona is now **Buddy**, a friendly companion with a short prompt, instead of
+  the grumpy wizard. Write your own: a persona with a character of its own is worth the effort.
+
 **Memory**
 - A loaded model and the image server can stop by themselves when nobody uses them, so they
   don't sit on your memory for days: Settings tab, **Unload after** (Models) and **Pictures

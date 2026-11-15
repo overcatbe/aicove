@@ -38,14 +38,14 @@ def move_in(say=None):
 
 def add_assistant():
     """The personas AIcove comes with, each made once: the plain Assistant (no prompt, no
-    knowledge, any model; for trying models) and Balthazar the Unsupervised, to show what a
+    knowledge, any model; for trying models) and Buddy, a friendly companion, to show what a
     persona can be. Deleted, they stay away (the mark stays behind); one of the same name
     that is there already is left as it is."""
     from . import personas
     here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     for pid, name, prompt, picture in (
             ("assistant", "Assistant", None, None),
-            ("balthazar-the-unsupervised", "Balthazar the Unsupervised", "balthazar.txt", "balthazar.jpg")):
+            ("buddy", "Buddy", "buddy.txt", None)):
         mark = os.path.join(PERSONA_DIR, f".{pid.split('-')[0]}-made")
         if os.path.exists(mark):
             continue
