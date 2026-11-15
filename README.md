@@ -199,6 +199,14 @@ persona is in the picture itself, the Pictures tool renders with that LoRA, so t
 named `pictures` and have `--lora-model-dir "$AICOVE_LORAS"` on its start line. The folder is
 synced with the AIcove folder like the personas.
 
+Pictures are 16:9 (1344×768) by default, close to the one megapixel the image model was trained
+at; Full HD is a separate shape. Each picture keeps its seed, so it can be made again. With a face
+detector on the Pictures tool's start line (`--ad-model face_yolov8n.safetensors`, a converted
+YOLOv8 face model), small faces in full-body and wide pictures are painted again at a bigger size
+and come out clean. The Documentation tab (*Chat → Pictures*) has the details, how to set up the
+detector, how to keep other people in a picture from getting the persona's face, and what we
+learned about training a face LoRA.
+
 A tool file (Tools tab, "Add tool…" writes the same):
 
     name: Voice configurator

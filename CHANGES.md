@@ -27,6 +27,18 @@
   in the picture itself, it describes itself as its instructions say and the picture is made with
   its LoRA, so it looks like itself every time. The image tool needs
   `--lora-model-dir "$AICOVE_LORAS"` on its start line.
+- **Seeds.** Every picture shows its seed underneath; the persona can give it back to remake a
+  picture with small changes and keep its composition.
+- **16:9 by default.** The shapes are now wide (1344×768, the default), square, portrait,
+  landscape and wide-hd (Full HD 1920×1088, only when asked). The image model was trained at
+  about one megapixel, so Full HD often stretches bodies or doubles heads; the normal shapes stay
+  near that size.
+- **Face fix for small faces.** In full-body and wide pictures faces are tiny and come out mushy.
+  Start the image server with a face detector (`--ad-model face_yolov8n.safetensors`) and every
+  picture with a LoRA gets a second pass that paints each small face again at 512×512 and blends
+  it back; close-ups are left alone. Without the detector nothing changes.
+- **Documentation:** setting up the face detector, keeping other people in a picture from getting
+  the persona's face, and what we learned training a face LoRA (Documentation tab, Chat).
 
 **Sync**
 - Fetch and push may take up to 15 minutes, for big LoRA files in the AIcove folder.

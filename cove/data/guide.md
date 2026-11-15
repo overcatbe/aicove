@@ -164,6 +164,53 @@ itself as its instructions say and the picture is made with its LoRA; pictures w
 they were. The image tool must be named `pictures` and have `--lora-model-dir "$AICOVE_LORAS"`
 on its start line. The LoRA folder is inside the AIcove folder, so it moves and syncs with it.
 
+**Shapes.** The persona picks one: **wide** (1344×768, 16:9, the default: title pictures for a
+site), **square** (1024×1024), **portrait** (832×1216), **landscape** (1216×832) or **wide-hd**
+(1920×1088, Full HD, only when asked). Z-Image was trained at about one megapixel; bigger
+pictures stretch bodies, double heads or paws and lose arms, so the normal shapes stay near that
+size and Full HD is the exception.
+
+**Seeds.** Under every picture is its **seed**. Same seed + same description + same shape = the
+same picture; the persona can remake a picture with small changes by giving its seed back. A seed
+is only good for its own description and shape: another shape with the same seed is another
+picture.
+
+**Face fix (small faces).** In full-body and wide pictures a face is only about 100 pixels, too
+few for eyes and skin, so faces come out mushy. If the Pictures tool's server is started with a
+face detector, every picture with a LoRA gets a second pass: each face smaller than 8% of the
+picture is cut out, painted again at 512×512 with the same description and LoRA (strength 0.4)
+and blended back. Close-ups are left alone. To switch it on:
+
+1. Download `face_yolov8n.pt` (the usual ADetailer face detector, e.g. from the Hugging Face repo
+   `Bingsu/adetailer`).
+2. Convert it once with stable-diffusion.cpp's script (needs Python with `ultralytics`, `torch`,
+   `safetensors`; a throwaway venv is fine):
+   `python scripts/convert_yolov8_to_safetensors.py face_yolov8n.pt face_yolov8n.safetensors`
+   The file must keep the name `face_yolov8n.safetensors`.
+3. Add `--ad-model /path/to/face_yolov8n.safetensors` to the Pictures tool's start line.
+
+Without the detector, pictures are made as before. A face fix pass adds roughly 15 seconds.
+
+**Other people in a picture.** A LoRA trained on one person pulls every face towards that person:
+a mayor, a dinner guest or a famous politician come out as the persona's twin, and two people
+shaking hands can merge. Clear prompts help a little (give each person their own clothes and their
+own sentence: *"Across the table sits a woman. She has short black hair and a red dress."*), a
+LoRA strength of about 0.8 a little more. What works: make the picture **without** the LoRA first
+(the image model gets the scene, the people and their hands right), then paint only the persona's
+part of the picture again **with** the LoRA (an img2img pass with a soft mask over that side,
+strength about 0.6). The others stay who they are. AIcove does not do this by itself yet.
+
+**Training a face LoRA (what we learned).** Pictures from several angles, lights and
+expressions, at the image model's own size (about 1024 px). Captions describe pose, clothes, light,
+place and expression, never the face, hair or eyes: those belong to the trigger word. Writing a
+class word in every caption (*"trigger, a man, …"*) makes the LoRA learn that every man looks like
+this; avoid it, or train with differential output preservation or with pictures of other people
+without the trigger. Save a checkpoint every 100–250 steps and test several in real scenes with the
+same seeds, not only in the training samples: earlier checkpoints follow the prompt and move more
+freely, later ones get the face sharper but stiffer and pull harder on everyone else in the
+picture. Keep descriptions short, one pose and one action: every extra instruction for a hand can
+become an extra hand.
+
 ## Agents
 
 Personas are for talking and writing; agents are for jobs. An agent has a name, a picture and a

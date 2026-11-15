@@ -10,6 +10,7 @@
 import base64
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -18,7 +19,19 @@ from . import personas, tools
 from .settings import S, loras_folder
 
 FOLDER = "pictures"   # in the persona's chats/
-SHAPES = {"square": "1024x1024", "portrait": "832x1216", "landscape": "1216x832"}
+# Small faces (full body, wide scenes) come out mushy: the face is only ~100 px, a dozen latent cells.
+# When the Pictures tool's sd-server is started with --ad-model <face detector>, each picture with a
+# LoRA gets a second pass: every face smaller than FACE_MAX_AREA of the picture is cut out, repainted
+# at 512x512 with the same prompt and LoRA, and blended back. Close-ups are left alone. The detector's
+# file must be named face_yolov8n.safetensors (the server matches the request's name to its file).
+FACE_DETECTOR = "face_yolov8n.pt"
+FACE_MAX_AREA = 0.08
+FACE_FIX = {"ad_model": FACE_DETECTOR, "ad_mask_max_ratio": FACE_MAX_AREA, "ad_denoising_strength": 0.4,
+            "ad_inpaint_only_masked_padding": 32}
+SHAPES = {"square": "1024x1024", "portrait": "832x1216", "landscape": "1216x832",
+          "wide": "1344x768",      # 16:9 at the model's own ~1 megapixel: bodies and faces come out right
+          "wide-hd": "1920x1088"}  # Full HD 16:9 (1080 is not divisible by 32); slower, 2 MP: more stretched or doubled bodies
+DEFAULT_SHAPE = "wide"   # title pictures for the sites are always 16:9
 LORA_TOOL = "pictures"   # the tool whose server knows the LoRAs
 HINT = ("You can make pictures with make_picture. Use it when the user asks for a picture, or when "
         "showing something says more than words. The user sees the picture in the chat by itself: don't "
@@ -48,8 +61,12 @@ TOOLS = [{"type": "function", "function": {
         "description": {"type": "string", "description":
                         "The full prompt for the image model, 150-250 words of English, written as the "
                         "instructions about pictures say."},
-        "shape": {"type": "string", "enum": list(SHAPES), "description": "square (default), portrait or landscape."},
-        "me": {"type": "boolean", "description": "True when you yourself are in the picture."}},
+        "shape": {"type": "string", "enum": list(SHAPES), "description": "wide (default: 16:9, e.g. a title picture), square, portrait, landscape, or wide-hd (Full HD 16:9, slower and more often with odd bodies: only when asked for Full HD)."},
+        "me": {"type": "boolean", "description": "True when you yourself are in the picture."},
+        "seed": {"type": "integer", "description":
+                 "Only to remake an earlier picture with changes: its seed (told when it was made). The same "
+                 "seed with a slightly changed description keeps the picture's composition. Leave out for a "
+                 "new picture."}},
         "required": ["description"]}}}]
 NAMES = {"make_picture"}
 
@@ -90,27 +107,39 @@ def loras():
         return []
 
 
-def request_for(description, shape, lora):
-    """The image server's request: with a LoRA its own API, which is the one that takes them."""
-    size = SHAPES.get(shape, SHAPES["square"])
+def new_seed():
+    return random.randint(1, 2**31 - 1)
+
+
+def request_for(description, shape, lora, seed):
+    """The image server's request: with a LoRA its own API, which is the one that takes them. The seed
+    is chosen here, not by the server, so the chat can show it and the picture can be made again."""
+    size = SHAPES.get(shape, SHAPES[DEFAULT_SHAPE])
     if lora:
         name, trigger = lora.split()
         width, height = size.split("x")
         url, body = "/sdapi/v1/txt2img", {"prompt": f"{trigger}, {description}", "width": int(width),
-                                          "height": int(height), "steps": 8, "cfg_scale": 1.0, "seed": -1,
+                                          "height": int(height), "steps": 8, "cfg_scale": 1.0, "seed": seed,
                                           "lora": [{"path": name, "multiplier": 1.0}]}
+        t = tool()
+        if t is not None and "--ad-model" in t.start:
+            body["alwayson_scripts"] = {"ADetailer": {"args": [True, False, FACE_FIX]}}
     else:
-        url, body = "/v1/images/generations", {"prompt": description, "n": 1, "size": size, "output_format": "jpeg",
-                                               "output_compression": 90}
+        # sd-server takes a seed on its OpenAI route only inside the prompt; a server at a plain address
+        # may be something else, so it gets the prompt as it is.
+        extra = f" <sd_cpp_extra_args>{json.dumps({'seed': seed})}</sd_cpp_extra_args>" if tool() is not None else ""
+        url, body = "/v1/images/generations", {"prompt": description + extra, "n": 1, "size": size,
+                                               "output_format": "jpeg", "output_compression": 90}
     return urllib.request.Request(address() + url, json.dumps(body).encode(), {"Content-Type": "application/json"})
 
 
-def make(pid, description, shape="square", say=print, lora=""):
-    """Make a picture; returns its file name in the persona's pictures folder. Raises OSError."""
+def make(pid, description, shape=DEFAULT_SHAPE, say=print, lora="", seed=None):
+    """Make a picture; returns (its file name in the persona's pictures folder, its seed). Raises OSError."""
     ready(say)
     t = tool()
     lora = lora if t is not None and t.name == LORA_TOOL else ""
-    req = request_for(description, shape, lora)
+    seed = seed if isinstance(seed, int) and seed > 0 else new_seed()
+    req = request_for(description, shape, lora, seed)
     try:
         with urllib.request.urlopen(req, timeout=1800) as r:
             data = json.loads(r.read())
@@ -128,7 +157,7 @@ def make(pid, description, shape="square", say=print, lora=""):
         name, n = time.strftime("%Y%m%d-%H%M%S") + f"-{n}{ext}", n + 1
     with open(os.path.join(folder(pid), name), "wb") as f:
         f.write(image)
-    return name
+    return name, seed
 
 
 def run(name, arguments, persona):
@@ -141,11 +170,13 @@ def run(name, arguments, persona):
     if not description:
         return "Give a description of the picture.", {}
     try:
-        made = make(persona.id, description, str(a.get("shape") or "square"), say=lambda t: None,
-                    lora=persona.lora if a.get("me") else "")
+        seed = int(a["seed"]) if str(a.get("seed") or "").strip().isdigit() else None
+        made, seed = make(persona.id, description, str(a.get("shape") or DEFAULT_SHAPE), say=lambda t: None,
+                          lora=persona.lora if a.get("me") else "", seed=seed)
     except OSError as e:
         return f"No picture: {e}", {}
-    return "The picture is made and the user sees it now.", {"picture": made}
+    return (f"The picture is made (seed {seed}) and the user sees it now.",
+            {"picture": made, "seed": seed})
 
 
 def describe(name, arguments):

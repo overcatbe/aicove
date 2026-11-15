@@ -1762,6 +1762,9 @@ class ChatTab(QWidget):
                     # Shown whole and small; a click opens it in the image viewer.
                     url = QUrl.fromLocalFile(picture).toString()
                     parts.append(f"<p>&nbsp;&nbsp;<a href='{url}'><img src='{url}' width='{PICTURE_WIDTH}'></a></p>")
+                    if m.get("seed"):
+                        # The seed, so the picture can be asked for again with changes ("seed 123, but laughing").
+                        parts.append(f"<p style='color:{dim}; font-size:small'>&nbsp;&nbsp;seed {int(m['seed'])}</p>")
                 continue
             if m["role"] == "user":
                 head = "<b>You</b>"
