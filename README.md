@@ -54,7 +54,13 @@ complicated software platform.
 
 ## What it does
 
-<p align="center"><img src="assets/chat-picture.png" alt="AIcove: the Assistant persona made a picture in the chat" width="760"></p>
+<p align="center"><img src="assets/chat-fireflies.webp" alt="AIcove: Buddy explains how fireflies make light and makes a picture of a meadow full of fireflies in the chat" width="760"></p>
+
+<p align="center">
+  <a href="assets/personas.webp"><img src="assets/personas.webp" alt="The Personas tab: Buddy's prompt, model and settings" width="250"></a>
+  <a href="assets/launchers.webp"><img src="assets/launchers.webp" alt="The Launchers tab: memory estimate and the exact llama-server command" width="250"></a>
+  <a href="assets/settings.webp"><img src="assets/settings.webp" alt="The Settings tab: paths, web search, pictures, voice and GPU" width="250"></a>
+</p>
 
 - **Chat**: pick a persona and talk. Its model is loaded when needed; chats are files in the
   persona's folder. Thinking is shown folded, Markdown and code are rendered. Per chat: style,
