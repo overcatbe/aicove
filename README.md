@@ -214,14 +214,14 @@ detector and how to keep other people in a picture from getting the persona's fa
 
 A tool file (Tools tab, "Add tool…" writes the same):
 
-    name: Voice configurator
+    name: Voices
     description: VoxCPM2, pick and tune voices
     group: Voice
-    start: HF_HUB_OFFLINE=1 exec tts-env/bin/python voxcpm_config_ui.py
-    folder: ~/voice-ui
-    address: http://localhost:7871
+    start: HF_HUB_OFFLINE=1 exec env/bin/python voxcpm_voices.py
+    folder: ~/voxcpm-voices
+    address: http://localhost:7872
     stop_everything: yes
-    not_with: voice-quick
+    not_with: pictures
 
 `start` and `stop` are shell commands, run in `folder`. Two kinds of tool:
 
@@ -267,6 +267,10 @@ Settings tab (a tool name or an address):
 - `voices` (no inputs): returns a list of `{"id", "name", "language", "gender", "style"}`, the
   voices a persona can have (only `id` and `name` are needed).
 - `speak` (inputs: text, voice id): returns the spoken text as an audio file (WAV).
+
+A ready one for VoxCPM2 is [voxcpm-voices](https://github.com/overcatbe/voxcpm-voices): pick, tune
+and save voices in the browser, with both endpoints built in (the tool file above starts it; free
+voices to start with are linked in its README).
 
 AIcove calls them as `POST /gradio_api/call/<name>` and reads the result stream. Any TTS model
 works behind it (VoxCPM, XTTS, Piper, ...); a minimal one with Gradio:
