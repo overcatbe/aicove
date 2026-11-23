@@ -684,6 +684,8 @@ class ChatTab(QWidget):
                 combo.addItem(text, value)
             combo.setToolTip(tip)
             combo.currentIndexChanged.connect(lambda _, k=key: self.on_control(k))
+            if key == "pictures":
+                combo.activated.connect(lambda _: self.check_pictures())
             name = QLabel(label + ":")
             name.setToolTip(tip)
             knobs.addWidget(name)
@@ -929,6 +931,17 @@ class ChatTab(QWidget):
             self.chat.save()
         except OSError as e:
             self.window.say(f"Can't save the chat: {e}")
+
+    def check_pictures(self):
+        """Pictures switched on by hand: say so when there is no image server to make them."""
+        if not self.controls["pictures"].currentData() or pictures.tool() is not None or pictures.address():
+            return
+        QMessageBox.warning(self, "No image server",
+                            "Pictures are on, but there is no image server to make them.\n\n"
+                            "AIcove doesn't make pictures itself: set up an image server (e.g. "
+                            "stable-diffusion.cpp's sd-server) as a tool named \"pictures\" on the Tools "
+                            "tab, or put the address of one under Pictures on the Settings tab.\n\n"
+                            "The Documentation tab (Chat → Pictures) says how.")
 
     def show_thinking_control(self):
         """Thinking can only be switched for models whose template knows how; the web needs
