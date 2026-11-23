@@ -36,6 +36,16 @@ FACE_SIZE = 40        # persona pictures in the persona list, in pixels
 CHAT_FACE_SIZE = 110  # the persona picture at the top right of the chat, in pixels
 
 
+def dim_colour(pal):
+    """Grey text for hints and notes: the theme's placeholder colour, unless that hardly shows
+    on the page (some themes make it white on a white page); then text and page mixed."""
+    dim, text, page = pal.placeholderText().color(), pal.text().color(), pal.base().color()
+    if abs(dim.lightness() - page.lightness()) >= 60:
+        return dim
+    return QColor((2 * text.red() + page.red()) // 3,
+                  (2 * text.green() + page.green()) // 3, (2 * text.blue() + page.blue()) // 3)
+
+
 def short(n):
     """12345 -> 12.3k, for the context meter."""
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
@@ -1207,6 +1217,15 @@ class ChatTab(QWidget):
         return True
 
     def send(self):
+        if self.persona is None and not self.worker and self.people.count() == 0:
+            if settings.S.exists:
+                QMessageBox.warning(self, "No personas", "There is nobody to talk to yet.\n\n"
+                                    "Make a persona on the Personas tab.")
+            else:
+                QMessageBox.warning(self, "No personas", "There is nobody to talk to yet.\n\n"
+                                    "Set up AIcove first: check the Settings tab and press Save. "
+                                    "Then Assistant and Buddy are here.")
+            return
         if self.persona is None or self.worker or self.waiting:
             return
         self.problem = None
@@ -1715,7 +1734,7 @@ class ChatTab(QWidget):
     def colours(self):
         pal = self.palette()
         dark = pal.window().color().lightness() < 128
-        dim = pal.placeholderText().color().name()
+        dim = dim_colour(pal).name()
         mine = pal.alternateBase().color().name()
         # Buttons under messages: a step lighter (dark theme) or darker than the page.
         button = pal.base().color().lighter(190).name() if dark else pal.base().color().darker(112).name()
@@ -1725,6 +1744,9 @@ class ChatTab(QWidget):
         """The chat as HTML: (everything above the answer coming in, that answer)."""
         dark, dim, mine, button = self.colours()
         if self.persona is None:
+            if not settings.S.exists:
+                return (f"<p style='color:{dim}'>First check the Settings tab and press <b>Save</b>: "
+                        "then Assistant and Buddy are here to talk to.</p>"), ""
             return f"<p style='color:{dim}'>No personas yet — make one on the Personas tab.</p>", ""
         messages = self.chat.messages if self.chat else []
         if not messages and not self.live:

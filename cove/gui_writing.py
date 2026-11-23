@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import chat, facts, gui_state, launchers, personas, summary, writing
-from .gui_chat import Face, to_html
+from .gui_chat import Face, dim_colour, to_html
 from .settings import STATE_DIR
 
 ROLE = Qt.ItemDataRole.UserRole
@@ -1708,7 +1708,7 @@ class ReviewPanel(QWidget):
             item = QListWidgetItem(f"{n.get('kind', 'other')}{status}{where}: “{quote}”\n{n['note'][:140]}")
             item.setData(ROLE, n["id"])
             if n.get("status", "open") != "open":
-                item.setForeground(self.palette().placeholderText())
+                item.setForeground(dim_colour(self.palette()))
             self.list.addItem(item)
             if n["id"] == keep:
                 pick = item

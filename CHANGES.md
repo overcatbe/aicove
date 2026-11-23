@@ -2,6 +2,11 @@
 
 ## Since v0.3
 
+**First start**
+- Saving the Settings tab for the first time makes Assistant and Buddy at once, no restart.
+  Until then the Chat tab says to do that, and **Send** shows a warning instead of doing nothing.
+- Light themes: grey text (hints, model names, thinking, seeds) no longer goes white on white.
+
 **Personas**
 - The example persona is now **Buddy**, a friendly companion with a short prompt, instead of
   the grumpy wizard. Write your own: a persona with a character of its own is worth the effort.

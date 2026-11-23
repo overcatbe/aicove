@@ -3840,6 +3840,11 @@ class Window(QMainWindow):
             QMessageBox.critical(self, "Can't save", str(e))
             return False
         self.say(f"Settings saved to {CONFIG_FILE}")
+        # First save on this machine: the folder and the starter personas, now (no restart).
+        from . import folder
+        folder.move_in(self.say)
+        self.reload_personas()
+        self.chat_tab.reload()
         self.load_settings()
         # Everything that showed something from the settings.
         self.budget = settings.gpu_budget()
